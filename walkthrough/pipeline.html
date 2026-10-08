@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>One Question Pipeline</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav class="top"><div class="in">
+  <span class="brand">KV reuse · Group 7</span>
+  <a href="index.html">1 · Overview</a>
+  <a href="pipeline.html" class="on">2 · One question, end to end</a>
+  <a href="methods.html">3 · The four methods</a>
+  <a href="experiments.html">4 · Experiments &amp; results</a>
+  <a href="codebase.html">5 · Codebase map</a>
+  <a href="slides.html">Slides</a>
+</div></nav>
+<main>
+<h1>One question, end to end</h1>
+<p class="lede">What happens to a single LoCoMo question, from raw conversation JSON to an F1 score. Steps 1-2 run once, offline, on a CPU node. Steps 3-7 run per question on the GPU, once per method configuration.</p>
+
+<div class="flow">
+
+<div class="step"><div class="dot">1</div><div class="body">
+  <h3>Chunk the conversation</h3>
+  <p>Each LoCoMo conversation has up to ~35 sessions of dialogue. We pack whole turns from one session into chunks of about 256 tokens. A turn is never split. Every chunk starts with LoCoMo's own date header so temporal questions stay answerable.</p>
+<pre>DATE: 1:56 pm on 8 May, 2023
+CONVERSATION:
+Caroline said, "Hey Mel! Good to see you! How have you been?"
+Melanie said, "Hey Caroline! Good to see you! I'm swamped with the kids &amp; work..."
+...</pre>
+  <p class="where">kvreuse/locomo.py · <code>chunk_conversation()</code></p>
+</div></div>
+
+<div class="step"><div class="dot">2</div><div class="body">
+  <h3>Tokenize once, retrieve once, save to disk</h3>
+  <p>Each chunk is tokenized on its own, one time. Then BM25 picks the top-10 chunks for every question. Both go to disk, and every experiment reads those same files. No method can win or lose because of retrieval.</p>
+  <div class="grid g2">
+    <div class="card"><code>data/chunks.json</code><br><span class="muted" style="font-size:.9rem">per conversation: speakers, chunks with text and token ids</span></div>
+    <div class="card"><code>data/retrieval_k10.json</code><br><span class="muted" style="font-size:.9rem">per question: category, gold answer, ranked chunk ids</span></div>
+  </div>
+  <p class="where">scripts/prepare_data.py · kvreuse/retrieval.py (BM25, optional dense embeddings) · PACE job <code>pace/prepare.sbatch</code></p>
+</div></div>
+
+<div class="step"><div class="dot">3</div><div class="body">
+  <h3>Build the prompt from token ids</h3>
+  <p>The prompt is a concatenation of stored token ids, never re-tokenized text, because SentencePiece can merge tokens across a join. That guarantees the full-prefill reference and the reuse path see exactly the same ids. <code>run_eval.py</code> asserts it on every question.</p>
+  <div class="strip">
+    <div class="seg-sys" style="flex:1.3">[BOS][INST] system</div>
+    <div class="seg-a" style="flex:2">chunk 7</div>
+    <div class="seg-b" style="flex:2">chunk 2</div>
+    <div class="seg-c" style="flex:2">chunk 19</div>
+    <div class="seg-d" style="flex:.8">…×10</div>
+    <div class="seg-q" style="flex:1.6">question [/INST]</div>
+  </div>
+  <div class="legend">
+    <span style="--c:var(--exact)">prefix: always at position 0, cached exactly</span>
+    <span style="--c:#5b8fd6">retrieved chunks: reused, any order</span>
+    <span style="--c:var(--question)">question: always computed fresh</span>
+  </div>
+  <p>With top-10 retrieval the prompt averages about 2,330 tokens (measured on the first 100 questions).</p>
+  <p class="where">kvreuse/prompt.py · <code>PromptBuilder</code> (Mistral v0.3 has no system role, so the system text goes inside <code>[INST]</code>)</p>
+</div></div>
+
+<div class="step"><div class="dot">4</div><div class="body">
+  <h3>Look up each chunk in the KV store</h3>
+  <p>The store is a dict keyed by a SHA-256 hash of the chunk's token ids. On a miss, it prefills <code>[BOS][INST] + chunk</code> and keeps only the chunk's slice, so the chunk sits at canonical positions starting at 2. Prefilling after <code>[BOS][INST]</code> means the chunk's first token isn't treated as the attention sink. A hit also compares the ids, so a hash collision can't return the wrong KV.</p>
+  <div class="card" style="font-size:.9rem">
+    <b>Stored per chunk:</b> keys (after RoPE, at canonical positions) and values, for all 32 layers, 8 KV heads, 128 dims. About 128 KiB per token in bf16.
+  </div>
+  <p class="where">kvreuse/store.py · <code>ChunkStore.chunk()</code>, <code>ChunkStore.prefix()</code></p>
+</div></div>
+
+<div class="step"><div class="dot">5</div><div class="body">
+  <h3>Assemble the cache and re-rotate keys</h3>
+  <p>Each chunk lands somewhere new. Its keys get one extra RoPE rotation by <code>delta = new_start − canonical_start</code>. Values are not rotated. The rotation is computed in fp32 and cast back once, always from the stored canonical position, so rounding error doesn't build up.</p>
+  <svg viewBox="0 0 640 150" width="100%" style="max-width:640px" role="img" aria-label="Chunk cached at position 2 moved to position 812 by rotating its keys by delta 810">
+    <text x="0" y="16" font-size="12" fill="var(--muted)">cached alone (canonical)</text>
+    <rect x="0" y="24" width="30" height="26" rx="4" fill="var(--exact)"/>
+    <text x="15" y="41" font-size="10" text-anchor="middle" fill="#fff">BOS</text>
+    <rect x="32" y="24" width="150" height="26" rx="4" fill="#8a6fc9"/>
+    <text x="107" y="41" font-size="11" text-anchor="middle" fill="#fff">chunk 19 @ pos 2…</text>
+    <text x="0" y="96" font-size="12" fill="var(--muted)">this prompt</text>
+    <rect x="0" y="104" width="60" height="26" rx="4" fill="var(--exact)"/>
+    <rect x="62" y="104" width="150" height="26" rx="4" fill="#5b8fd6"/>
+    <rect x="214" y="104" width="150" height="26" rx="4" fill="#d68f5b"/>
+    <rect x="366" y="104" width="150" height="26" rx="4" fill="#8a6fc9"/>
+    <text x="441" y="121" font-size="11" text-anchor="middle" fill="#fff">chunk 19 @ pos p</text>
+    <rect x="518" y="104" width="100" height="26" rx="4" fill="var(--question)"/>
+    <path d="M107 52 C 107 80, 441 70, 441 100" fill="none" stroke="var(--ink)" stroke-width="1.5" marker-end="url(#ar)"/>
+    <text x="300" y="72" font-size="12" text-anchor="middle" fill="var(--ink)">rotate K by delta = p − 2</text>
+    <defs><marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--ink)"/></marker></defs>
+  </svg>
+  <p>The output is a reused cache <code>K0, V0</code> covering the whole prompt, plus a <code>Layout</code> that records where the prefix, each chunk and the question sit. Question slots are left as zeros since they're always computed.</p>
+  <p class="where">kvreuse/store.py · <code>assemble()</code> · kvreuse/rope.py · <code>shift_keys()</code></p>
+</div></div>
+
+<div class="step"><div class="dot">6</div><div class="body">
+  <h3>Selective prefill: the one loop every method shares</h3>
+  <p>We step through Mistral's 32 decoder layers by hand. At each layer only a set <b>S</b> of tokens is recomputed. Everything else is read from the reused cache. A method is just a <code>Plan</code> object that picks S.</p>
+<pre>S = plan.initial_set(layout)          # always includes the whole question
+h = embed(ids[S])
+for layer in 0..31:
+    q, k, v = qkv(layer, h, positions[S])
+    K = K0[layer].clone();  K[S] = k     # write fresh KV first, so
+    V = V0[layer].clone();  V[S] = v     #   recomputed tokens see each other
+    keep = plan.on_layer(layer, S, K, V, K0, V0)   # may shrink S, may adjust K/V
+    if keep: S, h, q = keep, h[keep], q[keep]
+    h = attention(q over ALL K, V, mask kv_pos &lt;= q_pos) + MLP
+logits = lm_head(norm(h[last]))</pre>
+  <div class="callout warn" style="font-size:.92rem">
+    <b>Why hand-written instead of <code>model(...)</code>:</b> the queries are a scattered set of positions, not a contiguous block. HF's SDPA path without an explicit mask assumes contiguous queries and crops K/V, which would be silently wrong. So every attention call passes an explicit <code>kv_pos ≤ q_pos</code> mask. FlashAttention-2 can't express that mask, so it isn't used for selective recompute.
+  </div>
+  <p>S can only shrink with depth: a token recomputed at layer l needs its fresh hidden state from layer l−1. The full-prefill reference runs through this same code, so kernel differences never show up as reuse error.</p>
+  <p class="where">kvreuse/forward.py · <code>selective_prefill()</code>, <code>full_prefill()</code> · kvreuse/methods.py · the plans</p>
+</div></div>
+
+<div class="step"><div class="dot">7</div><div class="body">
+  <h3>Decode, score, log</h3>
+  <p>Greedy decoding for up to 32 tokens on top of the (possibly approximate) cache. Keep the first line of the answer, score it with LoCoMo's own F1 (ported scorer: stemming, article removal, category-specific rules). Category 5 (adversarial) is scored separately; the headline number is categories 1-4.</p>
+  <p>Per question, one JSON line: prediction, F1, prompt length, prefill ms, recompute budget, and with <code>--kl</code> the KL divergence and top-1 agreement of the first answer token against full prefill. Per run, a summary file with the full config (model id, GPU, torch version, k, budget, seed).</p>
+  <p class="where">kvreuse/forward.py · <code>greedy_decode()</code> · kvreuse/metrics.py · scripts/run_eval.py → <code>results/&lt;name&gt;.jsonl</code> + <code>.summary.json</code></p>
+</div></div>
+
+<div class="step"><div class="dot">8</div><div class="body">
+  <h3>Compare runs</h3>
+  <p>All runs over the same questions are joined and compared against <code>full</code>. Differences get paired bootstrap 95% CIs over questions, plus a conversation-level bootstrap, because LoCoMo has only 10 conversations and questions within one conversation aren't independent.</p>
+  <p class="where">scripts/analyze.py · kvreuse/metrics.py · <code>paired_bootstrap()</code></p>
+</div></div>
+
+</div>
+
+<h2>The served path (vLLM, method 1 only)</h2>
+<p>Same idea, inside an unmodified vLLM through its KV-connector plugin interface. vLLM asks the connector "how many leading tokens of this prompt can you supply?" We answer with the re-rotated chunk KV, and vLLM only computes the rest.</p>
+<div class="grid g3">
+  <div class="card"><b>Export</b><br><span style="font-size:.9rem">Build the store offline from the Transformers path, in vLLM's packed layout. ~2.8 GB for one conversation (conv-26).</span><div class="where">scripts/export_store.py</div></div>
+  <div class="card"><b>Match</b><br><span style="font-size:.9rem">Walk the prompt: exact prefix first, then find each chunk by its first 8 tokens and confirm the full ids. Any order works.</span><div class="where">connector_logic.py · <code>StoreIndex.match</code></div></div>
+  <div class="card"><b>Align</b><br><span style="font-size:.9rem">vLLM counts hits in 16-token blocks, so round down. vLLM computes the question plus at most 15 tail tokens.</span><div class="where">connector_logic.py · <code>matched_tokens</code></div></div>
+  <div class="card"><b>Load</b><br><span style="font-size:.9rem">Re-rotate K in the packed layout and write into vLLM's paged KV cache at the right slots.</span><div class="where">vllm_connector.py · <code>ChunkReuseConnector</code></div></div>
+</div>
+<p>Methods 2-4 need recompute inside the prefix at every layer, which would mean changing vLLM's scheduler. That's out of scope, so they stay in Transformers. Prefix caching must be off when the connector runs, otherwise vLLM would register the approximate KV under exact token hashes.</p>
+
+<p style="margin-top:32px"><a href="methods.html">Next: the four methods →</a></p>
+</main>
+</body>
+</html>

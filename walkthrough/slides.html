@@ -1,0 +1,734 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prefill Once, Reuse Anywhere</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400..700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0e1424;color:#c9cfdc;font-family:'IBM Plex Sans',Arial,sans-serif}
+header{max-width:1280px;margin:0 auto;padding:24px 16px 8px;display:flex;justify-content:space-between;align-items:baseline;gap:16px;flex-wrap:wrap}
+header a{color:#e8a36a}
+label{font-size:14px;cursor:pointer}
+.frame{max-width:1280px;margin:16px auto 32px;padding:0 16px}
+.stage{width:100%;aspect-ratio:16/9;position:relative;overflow:hidden;border-radius:8px;box-shadow:0 8px 30px rgba(0,0,0,.4)}
+.stage>section{width:1920px;height:1080px;position:absolute;left:0;top:0;transform-origin:0 0}
+.num{font-size:13px;opacity:.6;margin-top:6px;text-align:right}
+section aside{display:none}
+.note{display:none;background:#1a2238;border-radius:8px;padding:14px 18px;margin-top:10px;font-size:15px;line-height:1.5}
+body.notes .note{display:block}
+section x-shape{display:block;flex:none}
+section x-shape[kind=arrow-right]{clip-path:polygon(0 35%,60% 35%,60% 0,100% 50%,60% 100%,60% 65%,0 65%)}
+section x-shape[kind=arrow-down]{clip-path:polygon(35% 0,65% 0,65% 60%,100% 60%,50% 100%,0 60%,35% 60%)}
+section table{border-collapse:collapse;width:100%}
+section th,section td{text-align:left;padding:12px 16px}
+section ol,section ul{list-style-position:outside}
+</style>
+</head>
+<body>
+<header><span>Prefill Once, Reuse Anywhere · CS 6220 Group 7 · <a href="index.html">walkthrough</a></span>
+<label><input type="checkbox" id="nt"> speaker notes</label></header>
+<div class="frame" id="s1"><div class="stage"><section id="cover" data-transition="fade" style="background:#16213A;color:#F3EFE6;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;justify-content:space-between">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;letter-spacing:2px;text-transform:uppercase;color:#E8A36A">CS 6220 Big Data Systems · Group 7 · Project check-in</p>
+<div style="display:flex;flex-direction:column;gap:40px">
+<h1 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:120px;font-weight:700;line-height:1.05;letter-spacing:-2px">Prefill once,<br>reuse anywhere</h1>
+<p style="font-size:44px;line-height:1.3;color:#C9CFDC;width:1300px">Non-prefix KV reuse for agent memory in vLLM</p>
+</div>
+<div style="display:flex;flex-direction:row;justify-content:space-between;align-items:end">
+<p style="font-size:32px;line-height:1.4;color:#C9CFDC">Atharva Mohite · Teppei Kawashima<br>Prakhar Langer · Vishal Puneyani</p>
+<div style="display:flex;flex-direction:row;gap:10px">
+<div style="width:96px;height:56px;background:#3A4766;border-radius:8px"></div>
+<div style="width:140px;height:56px;background:#D9772B;border-radius:8px"></div>
+<div style="width:140px;height:56px;background:#F5D3B3;border-radius:8px"></div>
+<div style="width:140px;height:56px;background:#D9772B;border-radius:8px"></div>
+<div style="width:96px;height:56px;background:#6E95CF;border-radius:8px"></div>
+</div>
+</div>
+<aside>Hi Professor. We're Group 7, and our project is about making memory-augmented LLM agents cheaper to serve. The idea in one line: compute each memory's KV cache once, then reuse it wherever that memory shows up in a prompt, even when it isn't at the start. I'll start from the basics, what an agent memory is and where the cost comes from, and build up to the methods, the experiments and where we are.</aside>
+</section></div><div class="num">1 / 21</div></div>
+<div class="frame" id="s2"><div class="stage"><section id="agents" data-transition="fade" style="background:#F6F3EC;color:#16213A;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;letter-spacing:2px;text-transform:uppercase;color:#A4520F">Background 1 · agent memory</p>
+<h2 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:72px;font-weight:700;line-height:1.1;letter-spacing:-1px">Agents remember by pasting old conversation into the prompt</h2>
+</div>
+<div style="display:flex;flex-direction:row;gap:16px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#FFFDF8;border:2px solid #D8D1C2;border-radius:16px;padding:32px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600;color:#A4520F">1 · MEMORY STORE</p>
+<p style="font-size:24px;color:#4A5163">Months of chat, saved as entries</p>
+<p style="font-size:24px;background:#ECE7DB;padding:10px 16px;border-radius:8px">Session 2: moved to Boston</p>
+<p style="font-size:24px;background:#ECE7DB;padding:10px 16px;border-radius:8px">Session 5: adopted a dog</p>
+<p style="font-size:24px;background:#ECE7DB;padding:10px 16px;border-radius:8px">Session 9: started a new job</p>
+<p style="font-size:24px;color:#6A7080;padding:0 16px">… hundreds more</p>
+</div>
+<x-shape kind="arrow-right" style="width:44px;height:24px;background:#C9C2B2;align-self:center"></x-shape>
+<div style="flex:1;display:flex;flex-direction:column;gap:14px;background:#FFFDF8;border:2px solid #D8D1C2;border-radius:16px;padding:32px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600;color:#A4520F">2 · RETRIEVE</p>
+<p style="font-size:24px;color:#4A5163">A new question arrives</p>
+<p style="font-size:32px;background:#D6E2F3;padding:16px 22px;border-radius:16px 16px 16px 4px">"What breed is my dog?"</p>
+<p style="font-size:24px;line-height:1.4;color:#4A5163">A retriever (BM25 or embeddings) picks the top-k most relevant entries.</p>
+</div>
+<x-shape kind="arrow-right" style="width:44px;height:24px;background:#C9C2B2;align-self:center"></x-shape>
+<div style="flex:1;display:flex;flex-direction:column;gap:10px;background:#FFFDF8;border:2px solid #D8D1C2;border-radius:16px;padding:32px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600;color:#A4520F">3 · PROMPT THE LLM</p>
+<p style="font-size:24px;background:#16213A;color:#F3EFE6;padding:10px 16px;border-radius:8px">System prompt</p>
+<p style="font-size:24px;background:#F5D3B3;padding:10px 16px;border-radius:8px">Memory: adopted a dog</p>
+<p style="font-size:24px;background:#F5D3B3;padding:10px 16px;border-radius:8px">Memory: moved to Boston</p>
+<p style="font-size:24px;background:#D6E2F3;padding:10px 16px;border-radius:8px">Question</p>
+<p style="font-size:24px;color:#4A5163">Then the LLM writes the answer.</p>
+</div>
+</div>
+<p style="font-size:24px;line-height:1.4;color:#4A5163">Illustrative example. MemGPT and A-Mem work this way. Our test data, <span style="color:#16213A"><b>LoCoMo</b></span>: 10 very long multi-session conversations (17K to 31K tokens each) with 1,986 questions about them.</p>
+<aside>Start with what an agent memory is. An LLM chat agent that talks with someone over months can't fit the whole history in its context. So it saves the conversation as memory entries. When a new question comes in, a retriever picks the few most relevant entries, and the agent pastes them into the prompt in front of the question. Systems like MemGPT and A-Mem work this way. The dataset we use, LoCoMo, has ten very long multi-session conversations and about two thousand questions about them.</aside>
+</section></div><div class="num">2 / 21</div></div>
+<div class="frame" id="s3"><div class="stage"><section id="prefill" data-transition="fade" style="background:#F6F3EC;color:#16213A;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:44px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;letter-spacing:2px;text-transform:uppercase;color:#A4520F">Background 2 · how an LLM answers</p>
+<h2 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:72px;font-weight:700;line-height:1.1;letter-spacing:-1px">Two phases: prefill, then decode</h2>
+</div>
+<div style="display:flex;flex-direction:row;gap:32px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FFFDF8;border-radius:20px;padding:32px 36px;border-top:10px solid #2B5C9E">
+<h3 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:44px;font-weight:700;color:#2B5C9E">1 · Prefill</h3>
+<p style="font-size:24px;color:#4A5163">Read the whole prompt in one parallel pass</p>
+<div style="display:flex;flex-direction:row;gap:8px">
+<p style="font-size:24px;background:#16213A;color:#F3EFE6;padding:8px 14px;border-radius:6px">System</p>
+<p style="font-size:24px;background:#F5D3B3;padding:8px 14px;border-radius:6px">Memory</p>
+<p style="font-size:24px;background:#F5D3B3;padding:8px 14px;border-radius:6px">Memory</p>
+<p style="font-size:24px;background:#D6E2F3;padding:8px 14px;border-radius:6px">What breed is my dog?</p>
+</div>
+<x-shape kind="arrow-down" style="width:20px;height:28px;background:#9AAFCF;align-self:center"></x-shape>
+<p style="font-size:24px;background:#2B5C9E;color:#F3EFE6;padding:12px 20px;border-radius:10px;text-align:center">All prompt tokens × all 32 layers, in parallel</p>
+<x-shape kind="arrow-down" style="width:20px;height:28px;background:#9AAFCF;align-self:center"></x-shape>
+<p style="font-size:24px;background:#D6E2F3;padding:12px 20px;border-radius:10px;text-align:center">Output: the <b>KV cache</b> + the first answer token</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FFFDF8;border-radius:20px;padding:32px 36px;border-top:10px solid #16213A">
+<h3 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:44px;font-weight:700">2 · Decode</h3>
+<p style="font-size:24px;color:#4A5163">Write the answer one token at a time</p>
+<div style="display:flex;flex-direction:row;gap:16px;align-items:center"><p style="width:120px;font-size:24px;font-weight:600">"It's"</p><div style="width:300px;height:28px;background:#9AAFCF;border-radius:4px"></div><div style="width:24px;height:28px;background:#16213A;border-radius:4px"></div></div>
+<div style="display:flex;flex-direction:row;gap:16px;align-items:center"><p style="width:120px;font-size:24px;font-weight:600">"a"</p><div style="width:324px;height:28px;background:#9AAFCF;border-radius:4px"></div><div style="width:24px;height:28px;background:#16213A;border-radius:4px"></div></div>
+<div style="display:flex;flex-direction:row;gap:16px;align-items:center"><p style="width:120px;font-size:24px;font-weight:600">"beagle"</p><div style="width:348px;height:28px;background:#9AAFCF;border-radius:4px"></div><div style="width:24px;height:28px;background:#16213A;border-radius:4px"></div></div>
+<p style="font-size:24px;line-height:1.4;color:#4A5163">Each step reads the whole cache (light bar) and adds one entry for the new token (dark square). Cheap per step.</p>
+</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px">
+<div style="display:flex;flex-direction:row;gap:4px;align-items:center">
+<div style="flex:6;height:36px;background:#2B5C9E;border-radius:8px 0 0 8px"></div>
+<div style="width:36px;height:36px;background:#16213A"></div><div style="width:36px;height:36px;background:#16213A"></div><div style="width:36px;height:36px;background:#16213A"></div><div style="width:36px;height:36px;background:#16213A"></div><div style="width:36px;height:36px;background:#16213A"></div><div style="width:36px;height:36px;background:#16213A;border-radius:0 8px 8px 0"></div>
+<div style="flex:3"></div>
+</div>
+<p style="font-size:24px;color:#4A5163"><span style="color:#2B5C9E"><b>Prefill</b></span> grows with prompt length, and the user waits through all of it before the first word: the <span style="color:#16213A"><b>time to first token (TTFT)</b></span>.</p>
+</div>
+<aside>To see where the cost is, recall how an LLM answers. There are two phases. Prefill reads the entire prompt in one parallel pass through all the layers. That pass produces the KV cache, which I'll explain next, and the first token of the answer. Then decode writes the answer one token at a time; each step just reads the cache and adds one entry. Prefill cost grows with prompt length, and the user waits through all of it before seeing anything. With a long retrieved prompt, that wait is mostly prefill.</aside>
+</section></div><div class="num">3 / 21</div></div>
+<div class="frame" id="s4"><div class="stage"><section id="kvcache" data-transition="fade" style="background:#F6F3EC;color:#16213A;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:44px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;letter-spacing:2px;text-transform:uppercase;color:#A4520F">Background 3 · the KV cache</p>
+<h2 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:72px;font-weight:700;line-height:1.1;letter-spacing:-1px">Prefill leaves behind one K and V per token, per layer</h2>
+</div>
+<div style="display:flex;flex-direction:row;gap:56px;align-items:center">
+<div style="display:flex;flex-direction:column;gap:10px">
+<div style="display:flex;flex-direction:row;gap:16px">
+<div style="width:120px;height:252px;display:flex;flex-direction:column;justify-content:space-between"><p style="font-size:24px;color:#6A7080;text-align:right">Layer 32</p><p style="font-size:24px;color:#6A7080;text-align:right">Layer 1</p></div>
+<svg aria-label="Grid of prompt tokens by layers, every cell filled" width="572" height="252" viewBox="0 0 572 252"><defs><pattern id="kvp" x="0" y="0" width="36" height="36" patternUnits="userSpaceOnUse"><rect x="0" y="0" width="32" height="32" rx="5" fill="#2B5C9E"/></pattern></defs><rect x="0" y="0" width="576" height="252" fill="url(#kvp)"/><rect x="216" y="108" width="32" height="32" rx="5" fill="#E8A36A"/></svg>
+</div>
+<p style="font-size:24px;color:#6A7080;padding:0 0 0 136px">Prompt tokens →</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:24px">
+<p style="font-size:32px;line-height:1.4"><span style="color:#A4520F"><b>One cell</b></span> = a key vector and a value vector for one token at one layer. Decode reads these instead of recomputing the prompt.</p>
+<p style="font-size:24px;line-height:1.4;color:#4A5163;background:#ECE7DB;padding:20px 24px;border-radius:12px">Mistral-7B: 32 layers × 8 KV heads × 128 dims × (K and V) × 2 bytes = <b>128 KB per token</b>. A 2.3K-token prompt carries about 300 MB of KV.</p>
+</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600;color:#16213A">TWO FACTS WE NEED LATER</p>
+<div style="display:flex;flex-direction:row;gap:32px">
+<div style="flex:1;background:#FFFDF8;border-radius:16px;padding:28px 32px;border-left:8px solid #2B5C9E"><p style="font-size:32px;line-height:1.35">A token's KV encodes <b>where</b> it sits in the prompt.</p></div>
+<div style="flex:1;background:#FFFDF8;border-radius:16px;padding:28px 32px;border-left:8px solid #D9772B"><p style="font-size:32px;line-height:1.35">A token's KV depends on <b>every token before it</b>.</p></div>
+</div>
+</div>
+<aside>The KV cache is what prefill leaves behind: for every prompt token and every layer, a key vector and a value vector. Picture this grid: tokens across, layers up. Each cell is one token at one layer. For Mistral-7B, that's 128 kilobytes per token. Two facts about these cells matter for everything that follows. First, a token's key encodes its position in the prompt. Second, because of attention, a token's KV at every layer above the first depends on all the tokens before it.</aside>
+</section></div><div class="num">4 / 21</div></div>
+<div class="frame" id="s5"><div class="stage"><section id="prefixcache" data-transition="fade" style="background:#ECE7DB;color:#16213A;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;letter-spacing:2px;text-transform:uppercase;color:#A4520F">Background 4 · what engines already do</p>
+<h2 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:72px;font-weight:700;line-height:1.1;letter-spacing:-1px">Serving engines reuse KV when prompts start the same</h2>
+</div>
+<div style="display:flex;flex-direction:column;gap:28px">
+<div style="display:flex;flex-direction:row;gap:12px;align-items:center">
+<p style="width:260px;font-size:32px;font-weight:600;color:#4A5163">Request 1</p>
+<p style="width:200px;font-size:32px;background:#D6E2F3;padding:18px 24px;border-radius:10px;text-align:center">System</p>
+<p style="width:260px;font-size:32px;background:#D6E2F3;padding:18px 24px;border-radius:10px;text-align:center">Message 1</p>
+</div>
+<div style="display:flex;flex-direction:row;gap:12px;align-items:center">
+<p style="width:260px;font-size:32px;font-weight:600;color:#4A5163">Request 2</p>
+<p style="width:200px;font-size:32px;background:#F5D3B3;padding:18px 24px;border-radius:10px;text-align:center">System</p>
+<p style="width:260px;font-size:32px;background:#F5D3B3;padding:18px 24px;border-radius:10px;text-align:center">Message 1</p>
+<p style="width:260px;font-size:32px;background:#D6E2F3;padding:18px 24px;border-radius:10px;text-align:center">Reply 1</p>
+<p style="width:260px;font-size:32px;background:#D6E2F3;padding:18px 24px;border-radius:10px;text-align:center">Message 2</p>
+</div>
+<div style="display:flex;flex-direction:row;gap:12px">
+<div style="width:260px"></div>
+<p style="width:560px;font-size:24px;color:#A4520F;font-weight:600;text-align:center">Same start as request 1: KV reused</p>
+<p style="width:620px;font-size:24px;color:#2B5C9E;font-weight:600;text-align:center">New: computed</p>
+</div>
+</div>
+<div style="display:flex;flex-direction:row;gap:32px">
+<div style="flex:1;background:#FFFDF8;border-radius:16px;padding:32px"><p style="font-size:32px;line-height:1.4;color:#4A5163">vLLM's <b>prefix caching</b> and SGLang's RadixAttention share KV blocks between requests that begin with identical tokens.</p></div>
+<div style="flex:1;background:#FFFDF8;border-radius:16px;padding:32px"><p style="font-size:32px;line-height:1.4;color:#4A5163">It is <b>exact</b>, because the reused text has exactly the same text in front of it. It only works under that condition.</p></div>
+</div>
+<aside>Serving engines already avoid some of this work. If request two starts with exactly the same tokens as request one, like a chat where each turn extends the last, vLLM's prefix caching reuses the KV it already has and only computes the new part. It's exact, because the reused text has the same text in front of it. Keep that condition in mind: it's what breaks for agent memory.</aside>
+</section></div><div class="num">5 / 21</div></div>
+<div class="frame" id="s6"><div class="stage"><section id="problem" data-transition="fade" style="background:#F6F3EC;color:#16213A;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;letter-spacing:2px;text-transform:uppercase;color:#A4520F">The problem</p>
+<h2 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:72px;font-weight:700;line-height:1.1;letter-spacing:-1px">Agents prefill the same memories again and again</h2>
+</div>
+<div style="display:flex;flex-direction:column;gap:28px">
+<div style="display:flex;flex-direction:row;gap:12px;align-items:center">
+<p style="width:240px;font-size:32px;font-weight:600;color:#4A5163">Question 1</p>
+<p style="width:180px;font-size:32px;background:#16213A;color:#F3EFE6;padding:20px 24px;border-radius:10px;text-align:center">System</p>
+<p style="width:210px;font-size:32px;background:#FFFDF8;border:2px solid #C9C2B2;padding:18px 24px;border-radius:10px;text-align:center">Memory A</p>
+<p style="width:210px;font-size:32px;background:#FFFDF8;border:2px solid #C9C2B2;padding:18px 24px;border-radius:10px;text-align:center">Memory B</p>
+<p style="width:210px;font-size:32px;background:#FFFDF8;border:2px solid #C9C2B2;padding:18px 24px;border-radius:10px;text-align:center">Memory C</p>
+<p style="width:150px;font-size:32px;background:#D6E2F3;color:#16213A;padding:20px 24px;border-radius:10px;text-align:center">Q1</p>
+</div>
+<div style="display:flex;flex-direction:row;gap:12px;align-items:center">
+<p style="width:240px;font-size:32px;font-weight:600;color:#4A5163">Question 2</p>
+<p style="width:180px;font-size:32px;background:#16213A;color:#F3EFE6;padding:20px 24px;border-radius:10px;text-align:center">System</p>
+<p style="width:210px;font-size:32px;background:#F5D3B3;border:2px solid #D9772B;padding:18px 24px;border-radius:10px;text-align:center">Memory C</p>
+<p style="width:210px;font-size:32px;background:#F5D3B3;border:2px solid #D9772B;padding:18px 24px;border-radius:10px;text-align:center">Memory A</p>
+<p style="width:210px;font-size:32px;background:#FFFDF8;border:2px solid #C9C2B2;padding:18px 24px;border-radius:10px;text-align:center">Memory D</p>
+<p style="width:150px;font-size:32px;background:#D6E2F3;color:#16213A;padding:20px 24px;border-radius:10px;text-align:center">Q2</p>
+</div>
+<div style="display:flex;flex-direction:row;gap:12px">
+<div style="width:240px"></div>
+<p style="width:228px;font-size:24px;color:#2B5C9E;font-weight:600;text-align:center">Prefix cache hit</p>
+<p style="width:536px;font-size:24px;color:#A4520F;font-weight:600;text-align:center">Already computed for Q1, prefilled again</p>
+</div>
+</div>
+<div style="display:flex;flex-direction:row;gap:48px;border-top:2px solid #D8D1C2;padding:40px 0 0 0">
+<p style="flex:1;font-size:32px;line-height:1.4;color:#4A5163">Each question retrieves memories in a new mix and order. vLLM only reuses KV when two prompts <span style="color:#16213A"><b>start with identical tokens</b></span>, so its prefix cache stops matching right after the system prompt.</p>
+<p style="flex:1;font-size:32px;line-height:1.4;color:#4A5163">Prefill grows with prompt length and dominates <span style="color:#16213A"><b>time to first token</b></span>. Over a long conversation, the same memories get prefilled many times.</p>
+</div>
+<aside>Before an LLM writes its first token, it runs prefill: one pass over the prompt that computes a key and value vector for every token at every layer. That's the KV cache, and for long prompts it dominates time to first token.
+
+Memory-augmented agents retrieve entries from long-term memory and put them in front of every question. Here, question 1 pulls memories A, B, C. Question 2 pulls C, A, D. A and C were already computed, but vLLM's prefix caching only matches identical starting tokens, so after the system prompt everything is prefilled from scratch again.</aside>
+</section></div><div class="num">6 / 21</div></div>
+<div class="frame" id="s7"><div class="stage"><section id="statement" data-transition="fade" style="background:#16213A;color:#F3EFE6;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;letter-spacing:2px;text-transform:uppercase;color:#E8A36A">Problem statement</p>
+<p style="font-family:'Space Grotesk', Arial, sans-serif;font-size:44px;font-weight:500;line-height:1.3">Memory agents keep retrieving the same entries in new combinations and orders. vLLM prefills them from scratch every time, because it only reuses <span style="color:#E8A36A">identical prefixes</span>. We want to reuse a memory's KV <span style="color:#E8A36A">wherever it lands</span> in the prompt.</p>
+</div>
+<div style="display:flex;flex-direction:row;gap:32px;flex:1">
+<div style="flex:3;display:flex;flex-direction:column;gap:16px;background:#22304F;border-radius:20px;padding:40px;border-top:10px solid #6E95CF">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600;color:#9DB9E3">RESEARCH QUESTION</p>
+<p style="font-size:32px;line-height:1.4">How much prefill can non-prefix KV reuse remove from a memory agent, and how do different ways of correcting reused KV trade <b>answer quality</b> against <b>prefill cost</b>?</p>
+</div>
+<div style="flex:2;display:flex;flex-direction:column;gap:16px;background:#22304F;border-radius:20px;padding:40px;border-top:10px solid #D9772B">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600;color:#E8A36A">SECONDARY QUESTION</p>
+<p style="font-size:24px;line-height:1.4;color:#C9CFDC">Served through an unmodified vLLM, does reuse lower time to first token and raise throughput? How often must memories repeat before it beats prefix caching?</p>
+</div>
+</div>
+<aside>So here's the problem statement. Memory agents keep retrieving the same entries in new combinations and orders, and vLLM prefills them from scratch each time because it only reuses identical prefixes. We want to reuse a memory's KV wherever it lands in the prompt. The research question: how much prefill can that remove, and how do different ways of correcting the reused KV trade answer quality against prefill cost? The secondary question is about serving: through an unmodified vLLM, does it actually lower time to first token and raise throughput, and how often do memories need to repeat before it beats plain prefix caching?</aside>
+</section></div><div class="num">7 / 21</div></div>
+<div class="frame" id="s8"><div class="stage"><section id="deliver" data-transition="fade" style="background:#F6F3EC;color:#16213A;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;letter-spacing:2px;text-transform:uppercase;color:#A4520F">Objectives</p>
+<h2 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:72px;font-weight:700;line-height:1.1;letter-spacing:-1px">What we deliver, and what is new</h2>
+</div>
+<div style="display:flex;flex-direction:row;gap:48px">
+<div style="flex:1;display:flex;flex-direction:column">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600;color:#2B5C9E;padding:0 0 16px 0">DELIVERABLES</p>
+<div style="display:flex;flex-direction:row;gap:24px;padding:24px 0;border-top:2px solid #D8D1C2"><p style="width:48px;font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700;color:#2B5C9E">1</p><p style="flex:1;font-size:24px;line-height:1.4">A Transformers implementation of chunk KV reuse: RoPE re-rotation plus four corrections behind one recompute loop</p></div>
+<div style="display:flex;flex-direction:row;gap:24px;padding:24px 0;border-top:2px solid #D8D1C2"><p style="width:48px;font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700;color:#2B5C9E">2</p><p style="flex:1;font-size:24px;line-height:1.4">A controlled comparison on LoCoMo: F1 vs recompute budget, prefill cost vs number of retrieved memories</p></div>
+<div style="display:flex;flex-direction:row;gap:24px;padding:24px 0;border-top:2px solid #D8D1C2;border-bottom:2px solid #D8D1C2"><p style="width:48px;font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700;color:#2B5C9E">3</p><p style="flex:1;font-size:24px;line-height:1.4">A vLLM connector plugin that serves reused memory KV, with latency and throughput under a controlled repeat rate</p></div>
+</div>
+<div style="flex:1;display:flex;flex-direction:column">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600;color:#A4520F;padding:0 0 16px 0">WHAT IS NEW</p>
+<div style="display:flex;flex-direction:row;gap:24px;padding:24px 0;border-top:2px solid #D8D1C2"><p style="width:48px;font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700;color:#A4520F">→</p><p style="flex:1;font-size:24px;line-height:1.4">First comparison of boundary, selection and offset corrections on one conversational-memory workload, under one cost accounting</p></div>
+<div style="display:flex;flex-direction:row;gap:24px;padding:24px 0;border-top:2px solid #D8D1C2"><p style="width:48px;font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700;color:#A4520F">→</p><p style="flex:1;font-size:24px;line-height:1.4">An independent reimplementation of AgentKVShift, which has no public code</p></div>
+<div style="display:flex;flex-direction:row;gap:24px;padding:24px 0;border-top:2px solid #D8D1C2;border-bottom:2px solid #D8D1C2"><p style="width:48px;font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700;color:#A4520F">→</p><p style="flex:1;font-size:24px;line-height:1.4">Non-prefix reuse served through vLLM's public plugin interface, with TTFT and throughput measured against the real hit rate</p></div>
+</div>
+</div>
+<p style="font-size:24px;color:#4A5163">The correction algorithms come from prior work. We do not propose a new one; the contribution is engineering and evaluation.</p>
+<aside>Concretely, we deliver three things: a Transformers implementation with re-rotation and four corrections in one loop, a controlled comparison on LoCoMo, and a vLLM connector plugin with serving measurements. What's new isn't an algorithm; the corrections come from prior work. What's new is putting all of them side by side on one conversational-memory workload with one cost accounting, reimplementing AgentKVShift since it has no public code, and serving reuse through vLLM's plugin interface without changing the engine.</aside>
+</section></div><div class="num">8 / 21</div></div>
+<div class="frame" id="s9"><div class="stage"><section id="idea" data-transition="fade" style="background:#F6F3EC;color:#16213A;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;letter-spacing:2px;text-transform:uppercase;color:#A4520F">Our approach</p>
+<h2 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:72px;font-weight:700;line-height:1.1;letter-spacing:-1px">Prefill each memory once, reuse its KV at any position</h2>
+</div>
+<div style="display:flex;flex-direction:row;gap:12px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FFFDF8;border:2px solid #D8D1C2;border-radius:16px;padding:32px 28px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#A4520F;font-weight:600">01</p>
+<h3 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700;line-height:1.2">Chunk</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5163">Whole dialogue turns from one session, packed to about 256 tokens</p>
+</div>
+<x-shape kind="arrow-right" style="width:44px;height:24px;background:#C9C2B2;align-self:center"></x-shape>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FFFDF8;border:2px solid #D8D1C2;border-radius:16px;padding:32px 28px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#A4520F;font-weight:600">02</p>
+<h3 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700;line-height:1.2">Prefill alone</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5163">First time it is retrieved; store its KV under a hash of its tokens</p>
+</div>
+<x-shape kind="arrow-right" style="width:44px;height:24px;background:#C9C2B2;align-self:center"></x-shape>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FFFDF8;border:2px solid #D8D1C2;border-radius:16px;padding:32px 28px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#A4520F;font-weight:600">03</p>
+<h3 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700;line-height:1.2">Load</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5163">Later prompts fetch the stored KV for each retrieved chunk</p>
+</div>
+<x-shape kind="arrow-right" style="width:44px;height:24px;background:#C9C2B2;align-self:center"></x-shape>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FFFDF8;border:2px solid #D8D1C2;border-radius:16px;padding:32px 28px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#A4520F;font-weight:600">04</p>
+<h3 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700;line-height:1.2">Re-rotate</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5163">Shift the cached keys to their new position with RoPE</p>
+</div>
+<x-shape kind="arrow-right" style="width:44px;height:24px;background:#C9C2B2;align-self:center"></x-shape>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#D6E2F3;border:2px solid #2B5C9E;border-radius:16px;padding:32px 28px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#2B5C9E;font-weight:600">05</p>
+<h3 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700;line-height:1.2">Correct</h3>
+<p style="font-size:24px;line-height:1.4;color:#33415C">Recompute a few tokens; the question is always computed fresh</p>
+</div>
+</div>
+<div style="display:flex;flex-direction:row;gap:24px;align-items:center;background:#16213A;border-radius:16px;padding:36px 44px">
+<p style="font-size:32px;line-height:1.4;color:#F3EFE6">Prefix caching needs the <b>same prompt start</b>. We only need the <span style="color:#E8A36A"><b>same chunk</b></span>, anywhere in the prompt.</p>
+</div>
+<aside>Our approach: treat each memory entry as a chunk. The first time a chunk is retrieved we prefill it on its own and store its KV under a hash of its tokens. Later prompts that contain the chunk load that KV, re-rotate the keys to the new position, and then apply a correction. The question at the end is always computed fresh. So instead of needing the same prompt prefix, we only need the same chunk.</aside>
+</section></div><div class="num">9 / 21</div></div>
+<div class="frame" id="s10"><div class="stage"><section id="catch" data-transition="fade" style="background:#ECE7DB;color:#16213A;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;letter-spacing:2px;text-transform:uppercase;color:#A4520F">The catch</p>
+<h2 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:72px;font-weight:700;line-height:1.1;letter-spacing:-1px">Reused KV is wrong in two ways</h2>
+</div>
+<div style="display:flex;flex-direction:row;gap:40px;flex:1">
+<div style="flex:1;display:flex;flex-direction:column;gap:24px;background:#FFFDF8;border-radius:20px;padding:48px;border-top:10px solid #2B5C9E">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600;color:#2B5C9E">ERROR 1 · POSITION</p>
+<h3 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:44px;font-weight:700;line-height:1.2">The chunk now sits somewhere else</h3>
+<p style="font-size:32px;line-height:1.4;color:#4A5163">Keys encode where a token sits. Rotary embeddings let us re-rotate cached keys to the new position.</p>
+<div style="flex:1"></div>
+<p style="font-size:32px;font-weight:600;color:#2B5C9E">Fix is exact</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:24px;background:#FFFDF8;border-radius:20px;padding:48px;border-top:10px solid #D9772B">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600;color:#A4520F">ERROR 2 · CONTEXT</p>
+<h3 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:44px;font-weight:700;line-height:1.2">The chunk never saw its new neighbours</h3>
+<p style="font-size:32px;line-height:1.4;color:#4A5163">Cached alone, it never attended to the memories now in front of it. No rotation fixes that.</p>
+<div style="flex:1"></div>
+<p style="font-size:32px;font-weight:600;color:#A4520F">Fix is approximate: recompute some tokens</p>
+</div>
+</div>
+<p style="font-size:32px;line-height:1.4;color:#16213A"><b>Which tokens to recompute</b> is the question our project studies.</p>
+<aside>Reusing KV at a new position isn't exact, for two reasons. First, position: a token's key depends on where it sits. With rotary position embeddings we can fix that exactly by re-rotating the cached keys. Second, context: a chunk cached on its own never attended to the memories now placed before it, and no rotation fixes that. The error is usually small, because tokens mostly attend within their own chunk, but closing it means recomputing some tokens. Which tokens is the question we study.</aside>
+</section></div><div class="num">10 / 21</div></div>
+<div class="frame" id="s11"><div class="stage"><section id="methods" data-transition="fade" style="background:#F6F3EC;color:#16213A;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:44px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;letter-spacing:2px;text-transform:uppercase;color:#A4520F">Overview · same idea, different bets on where the error is</p>
+<h2 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:72px;font-weight:700;line-height:1.1;letter-spacing:-1px">Four correction methods</h2>
+</div>
+<div style="display:flex;flex-direction:row;gap:40px;align-items:center">
+<div style="display:flex;flex-direction:row;gap:12px;align-items:center"><div style="width:28px;height:28px;background:#F5D3B3;border-radius:4px"></div><p style="font-size:24px;color:#4A5163">Reused as is</p></div>
+<div style="display:flex;flex-direction:row;gap:12px;align-items:center"><div style="width:28px;height:28px;background:#DE8E4E;border-radius:4px"></div><p style="font-size:24px;color:#4A5163">Reused, plus an estimated shift</p></div>
+<div style="display:flex;flex-direction:row;gap:12px;align-items:center"><div style="width:28px;height:28px;background:#2B5C9E;border-radius:4px"></div><p style="font-size:24px;color:#4A5163">Recomputed fresh</p></div>
+<p style="font-size:24px;color:#4A5163">· three retrieved chunks shown</p>
+</div>
+<div style="display:flex;flex-direction:column">
+<div style="display:flex;flex-direction:row;gap:40px;align-items:center;padding:22px 0;border-top:2px solid #D8D1C2">
+<div style="width:420px;display:flex;flex-direction:column;gap:4px"><h3 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700">1 · Re-positioning only</h3><p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#6A7080">baseline</p></div>
+<svg aria-label="Three chunks, all tokens reused, none recomputed" width="796" height="40" viewBox="0 0 796 40"><defs><pattern id="m1a" x="0" y="0" width="20" height="40" patternUnits="userSpaceOnUse"><rect x="0" y="0" width="16" height="40" rx="3" fill="#F5D3B3"/></pattern></defs><rect x="0" y="0" width="240" height="40" fill="url(#m1a)"/><rect x="280" y="0" width="240" height="40" fill="url(#m1a)"/><rect x="560" y="0" width="240" height="40" fill="url(#m1a)"/></svg>
+<p style="flex:1;font-size:24px;line-height:1.35;color:#4A5163">Nothing. Assumes the error is negligible.</p>
+</div>
+<div style="display:flex;flex-direction:row;gap:40px;align-items:center;padding:22px 0;border-top:2px solid #D8D1C2">
+<div style="width:420px;display:flex;flex-direction:column;gap:4px"><h3 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700">2 · Boundary</h3><p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#6A7080">EPIC</p></div>
+<svg aria-label="First tokens of every chunk recomputed" width="796" height="40" viewBox="0 0 796 40"><defs><pattern id="m2a" x="0" y="0" width="20" height="40" patternUnits="userSpaceOnUse"><rect x="0" y="0" width="16" height="40" rx="3" fill="#F5D3B3"/></pattern></defs><rect x="0" y="0" width="240" height="40" fill="url(#m2a)"/><rect x="280" y="0" width="240" height="40" fill="url(#m2a)"/><rect x="560" y="0" width="240" height="40" fill="url(#m2a)"/><rect x="0" y="0" width="16" height="40" rx="3" fill="#2B5C9E"/><rect x="20" y="0" width="16" height="40" rx="3" fill="#2B5C9E"/><rect x="40" y="0" width="16" height="40" rx="3" fill="#2B5C9E"/><rect x="280" y="0" width="16" height="40" rx="3" fill="#2B5C9E"/><rect x="300" y="0" width="16" height="40" rx="3" fill="#2B5C9E"/><rect x="320" y="0" width="16" height="40" rx="3" fill="#2B5C9E"/><rect x="560" y="0" width="16" height="40" rx="3" fill="#2B5C9E"/><rect x="580" y="0" width="16" height="40" rx="3" fill="#2B5C9E"/><rect x="600" y="0" width="16" height="40" rx="3" fill="#2B5C9E"/></svg>
+<p style="flex:1;font-size:24px;line-height:1.35;color:#4A5163">First 16 to 32 tokens of every chunk. Error sits at chunk starts.</p>
+</div>
+<div style="display:flex;flex-direction:row;gap:40px;align-items:center;padding:22px 0;border-top:2px solid #D8D1C2">
+<div style="width:420px;display:flex;flex-direction:column;gap:4px"><h3 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700">3 · Dynamic selection</h3><p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#6A7080">CacheBlend</p></div>
+<svg aria-label="A scattered set of tokens across all chunks recomputed" width="796" height="40" viewBox="0 0 796 40"><defs><pattern id="m3a" x="0" y="0" width="20" height="40" patternUnits="userSpaceOnUse"><rect x="0" y="0" width="16" height="40" rx="3" fill="#F5D3B3"/></pattern></defs><rect x="0" y="0" width="240" height="40" fill="url(#m3a)"/><rect x="280" y="0" width="240" height="40" fill="url(#m3a)"/><rect x="560" y="0" width="240" height="40" fill="url(#m3a)"/><rect x="60" y="0" width="16" height="40" rx="3" fill="#2B5C9E"/><rect x="180" y="0" width="16" height="40" rx="3" fill="#2B5C9E"/><rect x="380" y="0" width="16" height="40" rx="3" fill="#2B5C9E"/><rect x="460" y="0" width="16" height="40" rx="3" fill="#2B5C9E"/><rect x="600" y="0" width="16" height="40" rx="3" fill="#2B5C9E"/><rect x="720" y="0" width="16" height="40" rx="3" fill="#2B5C9E"/></svg>
+<p style="flex:1;font-size:24px;line-height:1.35;color:#4A5163">10 to 15% of tokens that deviate most at an early layer. Error is sparse.</p>
+</div>
+<div style="display:flex;flex-direction:row;gap:40px;align-items:center;padding:22px 0;border-top:2px solid #D8D1C2;border-bottom:2px solid #D8D1C2">
+<div style="width:420px;display:flex;flex-direction:column;gap:4px"><h3 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700">4 · Offset correction</h3><p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#6A7080">AgentKVShift · main comparison</p></div>
+<svg aria-label="One probe token per chunk recomputed, all other tokens shifted by the estimated offset" width="796" height="40" viewBox="0 0 796 40"><defs><pattern id="m4a" x="0" y="0" width="20" height="40" patternUnits="userSpaceOnUse"><rect x="0" y="0" width="16" height="40" rx="3" fill="#DE8E4E"/></pattern></defs><rect x="0" y="0" width="240" height="40" fill="url(#m4a)"/><rect x="280" y="0" width="240" height="40" fill="url(#m4a)"/><rect x="560" y="0" width="240" height="40" fill="url(#m4a)"/><rect x="100" y="0" width="16" height="40" rx="3" fill="#2B5C9E"/><rect x="420" y="0" width="16" height="40" rx="3" fill="#2B5C9E"/><rect x="620" y="0" width="16" height="40" rx="3" fill="#2B5C9E"/></svg>
+<p style="flex:1;font-size:24px;line-height:1.35;color:#4A5163">A few probes; their mean shift is added to the rest. One shared shift per chunk.</p>
+</div>
+</div>
+<aside>These are the four corrections we compare, and they differ only in which tokens get recomputed. Method 1 recomputes nothing; it's the baseline. EPIC assumes the error lives at chunk boundaries, so it recomputes the first few tokens of each chunk. CacheBlend assumes the error is sparse and can be anywhere: it picks the tokens that deviate most at an early layer. AgentKVShift assumes most of a chunk's error is one shared offset: it recomputes a few probe tokens, estimates the mean shift and adds it to everything else. AgentKVShift is our main comparison point. It has no public code, so ours is an independent reimplementation, and no one has compared all of these on one conversational-memory workload under one cost accounting.</aside>
+</section></div><div class="num">11 / 21</div></div>
+<div class="frame" id="s12"><div class="stage"><section id="m1" data-transition="fade" style="background:#F6F3EC;color:#16213A;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:32px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;letter-spacing:2px;text-transform:uppercase;color:#A4520F">Method 1 of 4 · Re-positioning only · baseline</p>
+<h2 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:72px;font-weight:700;line-height:1.1;letter-spacing:-1px">Reuse everything, recompute nothing</h2>
+</div>
+<div style="display:flex;flex-direction:row;gap:48px;align-items:stretch">
+<div style="width:1144px;display:flex;flex-direction:column;gap:14px">
+<div style="display:flex;flex-direction:row;gap:16px">
+<div style="width:120px;height:224px;display:flex;flex-direction:column;justify-content:space-between"><p style="font-size:24px;color:#6A7080;text-align:right">Layer 32</p><p style="font-size:24px;color:#6A7080;text-align:right">Layer 1</p></div>
+<svg aria-label="Token by layer grid: system prompt from prefix cache, all three chunks reused at every layer, only the question computed fresh" width="1008" height="224" viewBox="0 0 1008 224"><defs><pattern id="a1s" width="28" height="28" patternUnits="userSpaceOnUse"><rect width="24" height="24" rx="4" fill="#16213A"/></pattern><pattern id="a1r" width="28" height="28" patternUnits="userSpaceOnUse"><rect width="24" height="24" rx="4" fill="#F5D3B3"/></pattern><pattern id="a1f" width="28" height="28" patternUnits="userSpaceOnUse"><rect width="24" height="24" rx="4" fill="#2B5C9E"/></pattern></defs><rect x="0" y="0" width="112" height="224" fill="url(#a1s)"/><rect x="140" y="0" width="224" height="224" fill="url(#a1r)"/><rect x="392" y="0" width="224" height="224" fill="url(#a1r)"/><rect x="644" y="0" width="224" height="224" fill="url(#a1r)"/><rect x="896" y="0" width="112" height="224" fill="url(#a1f)"/></svg>
+</div>
+<div style="display:flex;flex-direction:row;gap:28px;padding:0 0 0 136px">
+<p style="width:112px;font-size:24px;color:#4A5163;text-align:center;white-space:nowrap">System</p>
+<p style="width:224px;font-size:24px;color:#4A5163;text-align:center">Chunk A</p>
+<p style="width:224px;font-size:24px;color:#4A5163;text-align:center">Chunk B</p>
+<p style="width:224px;font-size:24px;color:#4A5163;text-align:center">Chunk C</p>
+<p style="width:112px;font-size:24px;color:#4A5163;text-align:center;white-space:nowrap">Question</p>
+</div>
+<div style="display:flex;flex-direction:row;gap:32px;padding:0 0 0 136px">
+<div style="display:flex;flex-direction:row;gap:10px;align-items:center"><div style="width:24px;height:24px;background:#16213A;border-radius:4px"></div><p style="font-size:24px;color:#4A5163">Prefix cache</p></div>
+<div style="display:flex;flex-direction:row;gap:10px;align-items:center"><div style="width:24px;height:24px;background:#F5D3B3;border-radius:4px"></div><p style="font-size:24px;color:#4A5163">Reused, re-rotated</p></div>
+<div style="display:flex;flex-direction:row;gap:10px;align-items:center"><div style="width:24px;height:24px;background:#2B5C9E;border-radius:4px"></div><p style="font-size:24px;color:#4A5163">Computed fresh</p></div>
+</div>
+<div style="display:flex;flex-direction:row;gap:20px;padding:8px 0 0 136px">
+<div style="flex:1;display:flex;flex-direction:column;gap:6px;background:#ECE7DB;border-radius:12px;padding:20px 24px"><p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600">Bets that</p><p style="font-size:24px;line-height:1.35;color:#4A5163">The context error is small enough to ignore</p></div>
+<div style="flex:1;display:flex;flex-direction:column;gap:6px;background:#ECE7DB;border-radius:12px;padding:20px 24px"><p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600">Recompute cost</p><p style="font-size:24px;line-height:1.35;color:#4A5163">0% of chunk tokens. The cheapest option.</p></div>
+</div>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:20px;background:#FFFDF8;border-radius:16px;padding:32px">
+<h3 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700">How it works</h3>
+<ol style="font-size:24px;line-height:1.45;color:#4A5163;padding:0 0 0 32px">
+<li>Load each retrieved chunk's cached KV.</li>
+<li>Re-rotate the keys to the chunk's new position.</li>
+<li>Compute only the question, which attends to everything before it.</li>
+</ol>
+</div>
+</div>
+<p style="font-size:24px;line-height:1.4;color:#16213A;background:#ECE7DB;padding:16px 24px;border-radius:12px">This is the only mode vLLM can serve without engine changes, so our connector runs this one.</p>
+<aside>From here on, every method gets the same picture: tokens across, layers up. Dark is the system prompt, which the prefix cache already handles exactly. Light orange is reused KV. Blue is computed fresh. Method 1, the baseline: load each chunk's KV, re-rotate it, and compute only the question. Nothing in the chunks is recomputed. It bets that the context error is small enough to ignore. It's the cheapest option, and it's the only one vLLM can serve without engine changes.</aside>
+</section></div><div class="num">12 / 21</div></div>
+<div class="frame" id="s13"><div class="stage"><section id="m2" data-transition="fade" style="background:#F6F3EC;color:#16213A;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:32px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;letter-spacing:2px;text-transform:uppercase;color:#A4520F">Method 2 of 4 · Boundary · EPIC</p>
+<h2 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:72px;font-weight:700;line-height:1.1;letter-spacing:-1px">Recompute the start of every chunk</h2>
+</div>
+<div style="display:flex;flex-direction:row;gap:48px;align-items:stretch">
+<div style="width:1144px;display:flex;flex-direction:column;gap:14px">
+<div style="display:flex;flex-direction:row;gap:16px">
+<div style="width:120px;height:224px;display:flex;flex-direction:column;justify-content:space-between"><p style="font-size:24px;color:#6A7080;text-align:right">Layer 32</p><p style="font-size:24px;color:#6A7080;text-align:right">Layer 1</p></div>
+<svg aria-label="Token by layer grid: the first two tokens of each chunk are recomputed at every layer, the rest of each chunk is reused, the question is computed fresh" width="1008" height="224" viewBox="0 0 1008 224"><defs><pattern id="a2s" width="28" height="28" patternUnits="userSpaceOnUse"><rect width="24" height="24" rx="4" fill="#16213A"/></pattern><pattern id="a2r" width="28" height="28" patternUnits="userSpaceOnUse"><rect width="24" height="24" rx="4" fill="#F5D3B3"/></pattern><pattern id="a2f" width="28" height="28" patternUnits="userSpaceOnUse"><rect width="24" height="24" rx="4" fill="#2B5C9E"/></pattern></defs><rect x="0" y="0" width="112" height="224" fill="url(#a2s)"/><rect x="140" y="0" width="224" height="224" fill="url(#a2r)"/><rect x="392" y="0" width="224" height="224" fill="url(#a2r)"/><rect x="644" y="0" width="224" height="224" fill="url(#a2r)"/><rect x="896" y="0" width="112" height="224" fill="url(#a2f)"/><rect x="140" y="0" width="56" height="224" fill="url(#a2f)"/><rect x="392" y="0" width="56" height="224" fill="url(#a2f)"/><rect x="644" y="0" width="56" height="224" fill="url(#a2f)"/></svg>
+</div>
+<div style="display:flex;flex-direction:row;gap:28px;padding:0 0 0 136px">
+<p style="width:112px;font-size:24px;color:#4A5163;text-align:center;white-space:nowrap">System</p>
+<p style="width:224px;font-size:24px;color:#4A5163;text-align:center">Chunk A</p>
+<p style="width:224px;font-size:24px;color:#4A5163;text-align:center">Chunk B</p>
+<p style="width:224px;font-size:24px;color:#4A5163;text-align:center">Chunk C</p>
+<p style="width:112px;font-size:24px;color:#4A5163;text-align:center;white-space:nowrap">Question</p>
+</div>
+<div style="display:flex;flex-direction:row;gap:32px;padding:0 0 0 136px">
+<div style="display:flex;flex-direction:row;gap:10px;align-items:center"><div style="width:24px;height:24px;background:#16213A;border-radius:4px"></div><p style="font-size:24px;color:#4A5163">Prefix cache</p></div>
+<div style="display:flex;flex-direction:row;gap:10px;align-items:center"><div style="width:24px;height:24px;background:#F5D3B3;border-radius:4px"></div><p style="font-size:24px;color:#4A5163">Reused, re-rotated</p></div>
+<div style="display:flex;flex-direction:row;gap:10px;align-items:center"><div style="width:24px;height:24px;background:#2B5C9E;border-radius:4px"></div><p style="font-size:24px;color:#4A5163">Computed fresh</p></div>
+</div>
+<div style="display:flex;flex-direction:row;gap:20px;padding:8px 0 0 136px">
+<div style="flex:1;display:flex;flex-direction:column;gap:6px;background:#ECE7DB;border-radius:12px;padding:20px 24px"><p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600">Bets that</p><p style="font-size:24px;line-height:1.35;color:#4A5163">The error lives at chunk starts</p></div>
+<div style="flex:1;display:flex;flex-direction:column;gap:6px;background:#ECE7DB;border-radius:12px;padding:20px 24px"><p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600">Recompute cost</p><p style="font-size:24px;line-height:1.35;color:#4A5163">A fixed 16 to 32 tokens per 256-token chunk: 6 to 12%</p></div>
+</div>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:20px;background:#FFFDF8;border-radius:16px;padding:32px">
+<h3 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700">Why the start?</h3>
+<p style="font-size:24px;line-height:1.45;color:#4A5163">Cached alone, a chunk's first tokens act as an <b>attention sink</b>: later tokens dump attention there. Mid-prompt, that is wrong.</p>
+<h3 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700">How it works</h3>
+<ol style="font-size:24px;line-height:1.45;color:#4A5163;padding:0 0 0 32px">
+<li>Reuse every chunk, re-rotated.</li>
+<li>Recompute each chunk's first k tokens at every layer.</li>
+<li>Compute the question.</li>
+</ol>
+</div>
+</div>
+<p style="font-size:24px;line-height:1.4;color:#16213A;background:#ECE7DB;padding:16px 24px;border-radius:12px">No selection step, so it is simple and cheap. AgentKVShift never compared against it; we will.</p>
+<aside>Method 2 is EPIC. Its observation: when a chunk is cached on its own, its first tokens become an attention sink, a place where attention piles up. Once the chunk sits in the middle of a prompt, that's wrong. So EPIC recomputes the first few tokens of every chunk, at every layer: the blue columns. Everything else is reused. It's simple and needs no selection step, costing a fixed 16 to 32 tokens per chunk. AgentKVShift's paper never compared against it, so we will.</aside>
+</section></div><div class="num">13 / 21</div></div>
+<div class="frame" id="s14"><div class="stage"><section id="m3" data-transition="fade" style="background:#F6F3EC;color:#16213A;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:32px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;letter-spacing:2px;text-transform:uppercase;color:#A4520F">Method 3 of 4 · Dynamic selection · CacheBlend</p>
+<h2 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:72px;font-weight:700;line-height:1.1;letter-spacing:-1px">Recompute the most-drifted tokens</h2>
+</div>
+<div style="display:flex;flex-direction:row;gap:48px;align-items:stretch">
+<div style="width:1144px;display:flex;flex-direction:column;gap:14px">
+<div style="display:flex;flex-direction:row;gap:16px">
+<div style="width:120px;height:224px;display:flex;flex-direction:column;justify-content:space-between"><p style="font-size:24px;color:#6A7080;text-align:right">Layer 32</p><div style="flex:1"></div><p style="font-size:24px;color:#A4520F;text-align:right;font-weight:600">select ▸</p><p style="font-size:24px;color:#6A7080;text-align:right">Layer 1</p></div>
+<svg aria-label="Token by layer grid: the first two layers are computed fresh for every chunk token; above the dashed selection line only four scattered tokens are recomputed, the rest reused" width="1008" height="224" viewBox="0 0 1008 224"><defs><pattern id="a3s" width="28" height="28" patternUnits="userSpaceOnUse"><rect width="24" height="24" rx="4" fill="#16213A"/></pattern><pattern id="a3r" width="28" height="28" patternUnits="userSpaceOnUse"><rect width="24" height="24" rx="4" fill="#F5D3B3"/></pattern><pattern id="a3f" width="28" height="28" patternUnits="userSpaceOnUse"><rect width="24" height="24" rx="4" fill="#2B5C9E"/></pattern></defs><rect x="0" y="0" width="112" height="224" fill="url(#a3s)"/><rect x="140" y="0" width="224" height="224" fill="url(#a3r)"/><rect x="392" y="0" width="224" height="224" fill="url(#a3r)"/><rect x="644" y="0" width="224" height="224" fill="url(#a3r)"/><rect x="896" y="0" width="112" height="224" fill="url(#a3f)"/><rect x="140" y="168" width="224" height="56" fill="url(#a3f)"/><rect x="392" y="168" width="224" height="56" fill="url(#a3f)"/><rect x="644" y="168" width="224" height="56" fill="url(#a3f)"/><rect x="308" y="0" width="28" height="168" fill="url(#a3f)"/><rect x="420" y="0" width="28" height="168" fill="url(#a3f)"/><rect x="532" y="0" width="28" height="168" fill="url(#a3f)"/><rect x="728" y="0" width="28" height="168" fill="url(#a3f)"/><line x1="134" y1="166" x2="872" y2="166" stroke="#A4520F" stroke-width="3" stroke-dasharray="8 6"/></svg>
+</div>
+<div style="display:flex;flex-direction:row;gap:28px;padding:0 0 0 136px">
+<p style="width:112px;font-size:24px;color:#4A5163;text-align:center;white-space:nowrap">System</p>
+<p style="width:224px;font-size:24px;color:#4A5163;text-align:center">Chunk A</p>
+<p style="width:224px;font-size:24px;color:#4A5163;text-align:center">Chunk B</p>
+<p style="width:224px;font-size:24px;color:#4A5163;text-align:center">Chunk C</p>
+<p style="width:112px;font-size:24px;color:#4A5163;text-align:center;white-space:nowrap">Question</p>
+</div>
+<div style="display:flex;flex-direction:row;gap:32px;padding:0 0 0 136px">
+<div style="display:flex;flex-direction:row;gap:10px;align-items:center"><div style="width:24px;height:24px;background:#16213A;border-radius:4px"></div><p style="font-size:24px;color:#4A5163">Prefix cache</p></div>
+<div style="display:flex;flex-direction:row;gap:10px;align-items:center"><div style="width:24px;height:24px;background:#F5D3B3;border-radius:4px"></div><p style="font-size:24px;color:#4A5163">Reused, re-rotated</p></div>
+<div style="display:flex;flex-direction:row;gap:10px;align-items:center"><div style="width:24px;height:24px;background:#2B5C9E;border-radius:4px"></div><p style="font-size:24px;color:#4A5163">Computed fresh</p></div>
+</div>
+<div style="display:flex;flex-direction:row;gap:20px;padding:8px 0 0 136px">
+<div style="flex:1;display:flex;flex-direction:column;gap:6px;background:#ECE7DB;border-radius:12px;padding:20px 24px"><p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600">Bets that</p><p style="font-size:24px;line-height:1.35;color:#4A5163">The error is sparse, but can be anywhere</p></div>
+<div style="flex:1;display:flex;flex-direction:column;gap:6px;background:#ECE7DB;border-radius:12px;padding:20px 24px"><p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600">Recompute cost</p><p style="font-size:24px;line-height:1.35;color:#4A5163">15% of tokens, plus the first two layers in full</p></div>
+</div>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:20px;background:#FFFDF8;border-radius:16px;padding:32px">
+<h3 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700">How it works</h3>
+<ol style="font-size:24px;line-height:1.45;color:#4A5163;padding:0 0 0 32px">
+<li>Run the first two layers fresh for every token.</li>
+<li>At the dashed line, compare fresh V with reused V. Pick the 15% of tokens that differ most.</li>
+<li>Recompute only those in every later layer; reuse the rest.</li>
+</ol>
+</div>
+</div>
+<p style="font-size:24px;line-height:1.4;color:#16213A;background:#ECE7DB;padding:16px 24px;border-radius:12px">Reports 2.2 to 3.3× lower TTFT on RAG. On LoCoMo, AgentKVShift's table puts it at 0.290 F1 vs 0.509 for full recompute.</p>
+<aside>Method 3 is CacheBlend. It assumes the error is sparse but could be anywhere, so it measures. It runs the first two layers fresh for every token, then at the dashed line compares the fresh values with the reused ones and picks the 15 percent of tokens that drifted most. Only those get recomputed in the layers above. Note that the measurement itself costs two full layers, and our budget counts that. It reported big TTFT wins on RAG, but on LoCoMo the AgentKVShift paper reports it losing a lot of quality, 0.29 versus 0.51 F1, which is one reason to test it ourselves.</aside>
+</section></div><div class="num">14 / 21</div></div>
+<div class="frame" id="s15"><div class="stage"><section id="m4" data-transition="fade" style="background:#F6F3EC;color:#16213A;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:32px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;letter-spacing:2px;text-transform:uppercase;color:#A4520F">Method 4 of 4 · Offset correction · AgentKVShift</p>
+<h2 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:72px;font-weight:700;line-height:1.1;letter-spacing:-1px">Measure a few probes, shift the rest</h2>
+</div>
+<div style="display:flex;flex-direction:row;gap:48px;align-items:stretch">
+<div style="width:1144px;display:flex;flex-direction:column;gap:14px">
+<div style="display:flex;flex-direction:row;gap:16px">
+<div style="width:120px;height:224px;display:flex;flex-direction:column;justify-content:space-between"><p style="font-size:24px;color:#6A7080;text-align:right">Layer 32</p><div style="flex:1"></div><p style="font-size:24px;color:#A4520F;text-align:right;font-weight:600">select ▸</p><p style="font-size:24px;color:#6A7080;text-align:right">Layer 1</p></div>
+<svg aria-label="Token by layer grid: the first two layers are computed fresh; above the dashed line one probe token per chunk is recomputed and every other chunk token is reused with a shift added" width="1008" height="224" viewBox="0 0 1008 224"><defs><pattern id="a4s" width="28" height="28" patternUnits="userSpaceOnUse"><rect width="24" height="24" rx="4" fill="#16213A"/></pattern><pattern id="a4h" width="28" height="28" patternUnits="userSpaceOnUse"><rect width="24" height="24" rx="4" fill="#DE8E4E"/></pattern><pattern id="a4f" width="28" height="28" patternUnits="userSpaceOnUse"><rect width="24" height="24" rx="4" fill="#2B5C9E"/></pattern></defs><rect x="0" y="0" width="112" height="224" fill="url(#a4s)"/><rect x="140" y="0" width="224" height="224" fill="url(#a4h)"/><rect x="392" y="0" width="224" height="224" fill="url(#a4h)"/><rect x="644" y="0" width="224" height="224" fill="url(#a4h)"/><rect x="896" y="0" width="112" height="224" fill="url(#a4f)"/><rect x="140" y="168" width="224" height="56" fill="url(#a4f)"/><rect x="392" y="168" width="224" height="56" fill="url(#a4f)"/><rect x="644" y="168" width="224" height="56" fill="url(#a4f)"/><rect x="252" y="0" width="28" height="168" fill="url(#a4f)"/><rect x="448" y="0" width="28" height="168" fill="url(#a4f)"/><rect x="812" y="0" width="28" height="168" fill="url(#a4f)"/><line x1="134" y1="166" x2="872" y2="166" stroke="#A4520F" stroke-width="3" stroke-dasharray="8 6"/></svg>
+</div>
+<div style="display:flex;flex-direction:row;gap:28px;padding:0 0 0 136px">
+<p style="width:112px;font-size:24px;color:#4A5163;text-align:center;white-space:nowrap">System</p>
+<p style="width:224px;font-size:24px;color:#4A5163;text-align:center">Chunk A</p>
+<p style="width:224px;font-size:24px;color:#4A5163;text-align:center">Chunk B</p>
+<p style="width:224px;font-size:24px;color:#4A5163;text-align:center">Chunk C</p>
+<p style="width:112px;font-size:24px;color:#4A5163;text-align:center;white-space:nowrap">Question</p>
+</div>
+<div style="display:flex;flex-direction:row;gap:32px;padding:0 0 0 136px">
+<div style="display:flex;flex-direction:row;gap:10px;align-items:center"><div style="width:24px;height:24px;background:#16213A;border-radius:4px"></div><p style="font-size:24px;color:#4A5163">Prefix cache</p></div>
+<div style="display:flex;flex-direction:row;gap:10px;align-items:center"><div style="width:24px;height:24px;background:#DE8E4E;border-radius:4px"></div><p style="font-size:24px;color:#4A5163">Reused + shift</p></div>
+<div style="display:flex;flex-direction:row;gap:10px;align-items:center"><div style="width:24px;height:24px;background:#2B5C9E;border-radius:4px"></div><p style="font-size:24px;color:#4A5163">Computed fresh (probes)</p></div>
+</div>
+<div style="display:flex;flex-direction:row;gap:20px;padding:8px 0 0 136px">
+<div style="flex:1;display:flex;flex-direction:column;gap:6px;background:#ECE7DB;border-radius:12px;padding:20px 24px"><p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600">Bets that</p><p style="font-size:24px;line-height:1.35;color:#4A5163">Most of a chunk's error is one shared offset</p></div>
+<div style="flex:1;display:flex;flex-direction:column;gap:6px;background:#ECE7DB;border-radius:12px;padding:20px 24px"><p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600">Recompute cost</p><p style="font-size:24px;line-height:1.35;color:#4A5163">10% probes per chunk, plus the first two layers</p></div>
+</div>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:20px;background:#FFFDF8;border-radius:16px;padding:32px">
+<h3 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700">How it works</h3>
+<ol style="font-size:24px;line-height:1.45;color:#4A5163;padding:0 0 0 32px">
+<li>Run the first two layers fresh.</li>
+<li>In each chunk, the 10% of tokens that drifted most become probes.</li>
+<li>Recompute probes at every later layer. Add their mean error to every other token in the chunk.</li>
+</ol>
+</div>
+</div>
+<p style="font-size:24px;line-height:1.4;color:#16213A;background:#ECE7DB;padding:16px 24px;border-radius:12px">Our main comparison. Reports 0.491 vs 0.509 F1 on LoCoMo at a 10% budget. No public code, so ours is a reimplementation.</p>
+<aside>Method 4 is AgentKVShift, our main comparison point. Its analysis found that most of a chunk's error is one shared offset, the whole chunk drifting the same way. So instead of recomputing many tokens, it recomputes a few probes per chunk, measures how far they moved, and adds that average shift to every other token in the chunk. That's the darker orange: reused, but corrected. It reports 0.491 F1 against 0.509 for full recompute on LoCoMo at a 10 percent budget. It has no public code, so ours is an independent reimplementation.</aside>
+</section></div><div class="num">15 / 21</div></div>
+<div class="frame" id="s16"><div class="stage"><section id="architecture" data-transition="fade" style="background:#F6F3EC;color:#16213A;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;letter-spacing:2px;text-transform:uppercase;color:#A4520F">What we build</p>
+<h2 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:72px;font-weight:700;line-height:1.1;letter-spacing:-1px">Two tracks: quality first, then serving</h2>
+</div>
+<div style="display:flex;flex-direction:row;gap:16px;align-items:stretch">
+<div style="width:250px;display:flex;flex-direction:column;gap:8px;justify-content:center;border-left:8px solid #2B5C9E;padding:0 0 0 24px">
+<p style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700;color:#2B5C9E">Core</p>
+<p style="font-size:24px;line-height:1.3;color:#4A5163">Transformers. Answers the research question.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#FFFDF8;border:2px solid #D8D1C2;border-radius:16px;padding:28px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600;color:#2B5C9E">C1 · Memory pipeline</p>
+<p style="font-size:24px;line-height:1.35;color:#4A5163">Chunk LoCoMo, retrieve top-k (BM25 or embeddings), save retrievals to disk</p>
+</div>
+<x-shape kind="arrow-right" style="width:44px;height:24px;background:#9AAFCF;align-self:center"></x-shape>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#FFFDF8;border:2px solid #D8D1C2;border-radius:16px;padding:28px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600;color:#2B5C9E">C2 · KV reuse engine</p>
+<p style="font-size:24px;line-height:1.35;color:#4A5163">Chunk KV store, RoPE re-rotation, per-layer recompute loop, methods 1 to 4</p>
+</div>
+<x-shape kind="arrow-right" style="width:44px;height:24px;background:#9AAFCF;align-self:center"></x-shape>
+<div style="width:300px;display:flex;flex-direction:column;gap:8px;justify-content:center;background:#D6E2F3;border-radius:16px;padding:28px">
+<p style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700">E0 to E2</p>
+<p style="font-size:24px;line-height:1.35;color:#33415C">F1 and prefill cost</p>
+</div>
+</div>
+<div style="display:flex;flex-direction:row;gap:16px;align-items:stretch">
+<div style="width:250px;display:flex;flex-direction:column;gap:8px;justify-content:center;border-left:8px solid #D9772B;padding:0 0 0 24px">
+<p style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700;color:#A4520F">Serving</p>
+<p style="font-size:24px;line-height:1.3;color:#4A5163">Unmodified vLLM 0.27.1. Starts after E0.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#FFFDF8;border:2px solid #D8D1C2;border-radius:16px;padding:28px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600;color:#A4520F">C4 · Zipf workload</p>
+<p style="font-size:24px;line-height:1.35;color:#4A5163">Synthetic requests where we control how often memories repeat</p>
+</div>
+<x-shape kind="arrow-right" style="width:44px;height:24px;background:#E3B38A;align-self:center"></x-shape>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;background:#FFFDF8;border:2px solid #D8D1C2;border-radius:16px;padding:28px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600;color:#A4520F">C3 · KV connector plugin</p>
+<p style="font-size:24px;line-height:1.35;color:#4A5163">Hands vLLM the re-rotated chunk KV as a prefix; vLLM prefills only the question</p>
+</div>
+<x-shape kind="arrow-right" style="width:44px;height:24px;background:#E3B38A;align-self:center"></x-shape>
+<div style="width:300px;display:flex;flex-direction:column;gap:8px;justify-content:center;background:#F5D3B3;border-radius:16px;padding:28px">
+<p style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700">E3 to E5</p>
+<p style="font-size:24px;line-height:1.35;color:#5A3A1E">C5 harness: TTFT, throughput</p>
+</div>
+</div>
+<p style="font-size:24px;line-height:1.4;color:#4A5163">Every configuration reads the same saved retrievals. The connector serves method 1 only: methods 2 to 4 recompute tokens inside the prefix at every layer, which would need vLLM scheduler changes, and editing vLLM is out of scope.</p>
+<aside>Two tracks. The core is C1 and C2 in plain Transformers: a memory pipeline that chunks LoCoMo and saves retrievals to disk, so retrieval can never explain a difference between methods, and a reuse engine with the KV store, re-rotation, and one recompute loop that all four methods plug into. That answers the research question by itself. The second track serves reuse through an unmodified vLLM using its KV-connector plugin interface, driven by a synthetic workload where we control how often memories repeat. vLLM can only serve method 1 that way; the others would need scheduler changes.</aside>
+</section></div><div class="num">16 / 21</div></div>
+<div class="frame" id="s17"><div class="stage"><section id="tech" data-transition="fade" style="background:#ECE7DB;color:#16213A;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;letter-spacing:2px;text-transform:uppercase;color:#A4520F">What we use</p>
+<h2 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:72px;font-weight:700;line-height:1.1;letter-spacing:-1px">Tools and resources</h2>
+</div>
+<div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:24px">
+<div style="display:flex;flex-direction:column;gap:10px;background:#FFFDF8;border-radius:16px;padding:32px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600;color:#2B5C9E">MODEL</p>
+<h3 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700">Mistral-7B-Instruct-v0.3</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5163">The model AgentKVShift reports on LoCoMo, so our numbers compare with theirs</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FFFDF8;border-radius:16px;padding:32px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600;color:#2B5C9E">DATA</p>
+<h3 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700">LoCoMo + synthetic Zipf</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5163">LoCoMo for quality; a Zipf request pool with a tunable repeat rate for serving</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FFFDF8;border-radius:16px;padding:32px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600;color:#2B5C9E">COMPUTE</p>
+<h3 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700">PACE ICE</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5163">One H100 or A100-80GB per run, through the course allocation</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FFFDF8;border-radius:16px;padding:32px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600;color:#A4520F">CORE STACK</p>
+<h3 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700">PyTorch + Transformers</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5163">A hand-written per-layer forward pass for selective recompute; rank_bm25 and sentence-transformers for retrieval</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FFFDF8;border-radius:16px;padding:32px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600;color:#A4520F">SERVING</p>
+<h3 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700">vLLM 0.27.1, pinned</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5163">Its KV-connector plugin interface, following LMCache's connector as the reference design</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#16213A;border-radius:16px;padding:32px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600;color:#E8A36A">SIZING</p>
+<h3 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700;color:#F3EFE6">128 KB per token</h3>
+<p style="font-size:24px;line-height:1.4;color:#C9CFDC">About 35 GB of KV for all ten conversations: one machine, no distributed store</p>
+</div>
+</div>
+<aside>Quickly, the tools. The model is Mistral-7B-Instruct, chosen because it's what AgentKVShift reports on LoCoMo. LoCoMo measures quality and a synthetic Zipf workload measures serving. Everything runs on PACE ICE, one H100 or A100 per run. The core is PyTorch and Transformers with our own per-layer forward pass, and serving is a pinned vLLM release through its KV-connector plugin interface. The whole KV store for all ten conversations is around 35 gigabytes, so it fits on one machine.</aside>
+</section></div><div class="num">17 / 21</div></div>
+<div class="frame" id="s18"><div class="stage"><section id="experiments" data-transition="fade" style="background:#ECE7DB;color:#16213A;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:40px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;letter-spacing:2px;text-transform:uppercase;color:#A4520F">How we measure it</p>
+<h2 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:72px;font-weight:700;line-height:1.1;letter-spacing:-1px">Six experiments, one correctness gate</h2>
+</div>
+<div style="display:flex;flex-direction:row;gap:16px;flex-wrap:wrap">
+<p style="font-size:24px;background:#FFFDF8;padding:8px 20px;border-radius:999px">Mistral-7B-Instruct-v0.3</p>
+<p style="font-size:24px;background:#FFFDF8;padding:8px 20px;border-radius:999px">LoCoMo: 10 conversations, 1,986 questions</p>
+<p style="font-size:24px;background:#FFFDF8;padding:8px 20px;border-radius:999px">One H100 or A100 on PACE ICE</p>
+<p style="font-size:24px;background:#FFFDF8;padding:8px 20px;border-radius:999px">Reference: full prefill of the same prompt</p>
+</div>
+<table style="font-size:24px;color:#16213A;background:#FFFDF8;border-radius:12px;padding:14px 18px">
+<tr><th style="width:7%">ID</th><th style="width:36%">Question</th><th style="width:15%">Stack</th><th style="width:42%">Measurement</th></tr>
+<tr style="background:#D6E2F3"><td>E0</td><td>Is the implementation correct?</td><td>Transformers</td><td>Gate: 4 exact-match checks against full prefill</td></tr>
+<tr style="background:#D6E2F3"><td>E1</td><td>How much quality does each method keep?</td><td>Transformers</td><td>LoCoMo F1 vs recompute budget, 0 to 60%</td></tr>
+<tr style="background:#D6E2F3"><td>E2</td><td>How much prefill is removed?</td><td>Transformers</td><td>Prefill time and tokens computed vs k</td></tr>
+<tr style="background:#F7E2CF"><td>E3</td><td>Does the connector cut latency?</td><td>vLLM</td><td>TTFT vs k: full, prefix cache, connector</td></tr>
+<tr style="background:#F7E2CF"><td>E4</td><td>When does reuse beat prefix caching?</td><td>vLLM, Zipf</td><td>Throughput and TTFT as reuse goes 0 to 100%</td></tr>
+<tr style="background:#F7E2CF"><td>E5</td><td>Does the connector match the reference?</td><td>vLLM vs HF</td><td>Same tokens and KV, then greedy outputs and F1</td></tr>
+</table>
+<p style="font-size:24px;line-height:1.4;color:#4A5163"><span style="color:#2B5C9E"><b>Blue rows: core.</b></span> <span style="color:#A4520F"><b>Orange rows: serving.</b></span> If any E0 check fails, every later number is meaningless, so nothing else gets reported until it passes.</p>
+<aside>Everything runs on Mistral-7B-Instruct-v0.3, which is the model AgentKVShift reports on LoCoMo, so our numbers line up with theirs. E0 is a hard correctness gate: four checks where reuse must exactly match full prefill. E1 is the main result, F1 against recompute budget, one curve per method. E2 is how much prefill time we actually remove as the number of retrieved memories grows. E3 to E5 are the vLLM side: latency, when reuse beats prefix caching as the repeat rate changes, and a check that the connector matches our Transformers reference.</aside>
+</section></div><div class="num">18 / 21</div></div>
+<div class="frame" id="s19"><div class="stage"><section id="progress" data-transition="fade" style="background:#F6F3EC;color:#16213A;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:44px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;letter-spacing:2px;text-transform:uppercase;color:#A4520F">Progress · week 7</p>
+<h2 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:72px;font-weight:700;line-height:1.1;letter-spacing:-1px">Early numbers: reuse is fast, but needs correction</h2>
+</div>
+<div style="display:flex;flex-direction:row;gap:32px">
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FFFDF8;border-radius:20px;padding:40px;border-top:10px solid #16213A">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600;color:#16213A">E0 GATE PASSED</p>
+<p style="font-family:'Space Grotesk', Arial, sans-serif;font-size:120px;font-weight:700;line-height:1;letter-spacing:-3px">4.6e-5</p>
+<p style="font-size:24px;line-height:1.4;color:#4A5163">Worst logit error against Hugging Face full prefill. Gate was 1e-3.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FFFDF8;border-radius:20px;padding:40px;border-top:10px solid #D9772B">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600;color:#A4520F">QUALITY COST</p>
+<p style="font-family:'Space Grotesk', Arial, sans-serif;font-size:120px;font-weight:700;line-height:1;letter-spacing:-3px;color:#A4520F">−47%</p>
+<p style="font-size:24px;line-height:1.4;color:#4A5163">F1 with no correction: 0.244 for full prefill, 0.129 for re-positioning only.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FFFDF8;border-radius:20px;padding:40px;border-top:10px solid #2B5C9E">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600;color:#2B5C9E">PREFILL SPEEDUP</p>
+<p style="font-family:'Space Grotesk', Arial, sans-serif;font-size:120px;font-weight:700;line-height:1;letter-spacing:-3px;color:#2B5C9E">2.6×</p>
+<p style="font-size:24px;line-height:1.4;color:#4A5163">Median prefill 78.9 ms full vs 29.9 ms reused, on prompts of about 2.3K tokens.</p>
+</div>
+</div>
+<div style="display:flex;flex-direction:row;gap:24px">
+<div style="flex:1;display:flex;flex-direction:column;gap:6px;background:#ECE7DB;border-radius:14px;padding:22px 28px"><p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600">Built</p><p style="font-size:24px;color:#4A5163">C1, C2, C3 connector code</p></div>
+<div style="flex:1;display:flex;flex-direction:column;gap:6px;background:#ECE7DB;border-radius:14px;padding:22px 28px"><p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600">Running on PACE</p><p style="font-size:24px;color:#4A5163">E1 sweep, full baselines</p></div>
+<div style="flex:1;display:flex;flex-direction:column;gap:6px;background:#ECE7DB;border-radius:14px;padding:22px 28px"><p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;font-weight:600">Next</p><p style="font-size:24px;color:#4A5163">E2 timings, E5 check, C4, C5</p></div>
+</div>
+<p style="position:absolute;left:128px;bottom:64px;width:1664px;font-size:24px;color:#6A7080">Preliminary. E0: fp32, H100, 20 prompts. F1: 100-question smoke run, top-10, bf16, categories 1 to 4. Timing: 12-prompt profile.</p>
+<aside>We're ahead of the proposal schedule. The E0 gate, planned for week 9, passed this week on the real model: worst logit error 4.6e-5 against a 1e-3 tolerance. We also have a first 100-question smoke run. Re-positioning alone, with no correction, drops F1 from 0.244 to 0.129, about half. Prefill drops about 2.6 times, from 78.9 to 29.9 milliseconds. So reuse is fast but loses real quality, which is exactly the gap the three correction methods are supposed to close. These are preliminary numbers; the full E1 sweep is running now.</aside>
+</section></div><div class="num">19 / 21</div></div>
+<div class="frame" id="s20"><div class="stage"><section id="plan" data-transition="fade" style="background:#F6F3EC;color:#16213A;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;letter-spacing:2px;text-transform:uppercase;color:#A4520F">Plan · experiments end Nov 20, report due Dec 1</p>
+<h2 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:72px;font-weight:700;line-height:1.1;letter-spacing:-1px">Timeline and what counts as success</h2>
+</div>
+<div style="display:grid;grid-template-columns:repeat(10, 1fr);grid-template-rows:auto auto auto;gap:12px 6px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#6A7080">W6</p>
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#A4520F;font-weight:600">W7 now</p>
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#6A7080">W8</p>
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#6A7080">W9</p>
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#6A7080">W10</p>
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#6A7080">W11</p>
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#6A7080">W12</p>
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#6A7080">W13</p>
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#6A7080">W14</p>
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#6A7080">W15</p>
+<div style="height:18px;background:#16213A;border-radius:9px"></div>
+<div style="height:18px;background:#16213A;border-radius:9px"></div>
+<div style="height:18px;background:#2B5C9E;border-radius:9px"></div>
+<div style="height:18px;background:#2B5C9E;border-radius:9px"></div>
+<div style="height:18px;background:#2B5C9E;border-radius:9px"></div>
+<div style="height:18px;background:#2B5C9E;border-radius:9px"></div>
+<div style="height:18px;background:#D9772B;border-radius:9px"></div>
+<div style="height:18px;background:#D9772B;border-radius:9px"></div>
+<div style="height:18px;background:#B9B2A3;border-radius:9px"></div>
+<div style="height:18px;background:#B9B2A3;border-radius:9px"></div>
+<p style="font-size:24px;line-height:1.3">Proposal in</p>
+<p style="font-size:24px;line-height:1.3">Setup, E0 passed early</p>
+<p style="font-size:24px;line-height:1.3">Retrievals frozen</p>
+<p style="font-size:24px;line-height:1.3">Methods 1, 2</p>
+<p style="font-size:24px;line-height:1.3">All methods run</p>
+<p style="font-size:24px;line-height:1.3">Core E0 to E2 done</p>
+<p style="font-size:24px;line-height:1.3">E5 passes</p>
+<p style="font-size:24px;line-height:1.3">All data in</p>
+<p style="font-size:24px;line-height:1.3">Report drafted</p>
+<p style="font-size:24px;line-height:1.3">Submit</p>
+</div>
+<div style="display:flex;flex-direction:row;gap:24px">
+<div style="flex:1;display:flex;flex-direction:column;gap:10px;background:#FFFDF8;border-radius:16px;padding:28px;border-left:8px solid #2B5C9E">
+<p style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700;color:#2B5C9E">≤ 0.02 F1</p>
+<p style="font-size:24px;line-height:1.35;color:#4A5163">AgentKVShift stays this close to full prefill at a 10 to 15% recompute budget</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:10px;background:#FFFDF8;border-radius:16px;padding:28px;border-left:8px solid #2B5C9E">
+<p style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700;color:#2B5C9E">Full curves</p>
+<p style="font-size:24px;line-height:1.35;color:#4A5163">EPIC and CacheBlend quality vs cost, 0 to 60%, no fixed threshold</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:10px;background:#FFFDF8;border-radius:16px;padding:28px;border-left:8px solid #2B5C9E">
+<p style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700;color:#2B5C9E">≥ 2× faster</p>
+<p style="font-size:24px;line-height:1.35;color:#4A5163">Prefill time with AgentKVShift once 6 or more memories are retrieved</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:10px;background:#FFFDF8;border-radius:16px;padding:28px;border-left:8px solid #D9772B">
+<p style="font-family:'Space Grotesk', Arial, sans-serif;font-size:32px;font-weight:700;color:#A4520F">Beat both</p>
+<p style="font-size:24px;line-height:1.35;color:#4A5163">Connector TTFT beats full prefill and prefix caching when memories repeat in new orders</p>
+</div>
+</div>
+<aside>Experiments end November 20 so the last week and a half goes to writing. If anything slips, E4 is cut first; E0 to E2 are never cut. Success means: AgentKVShift within 0.02 F1 of full prefill at a 10 to 15 percent budget, full quality-cost curves for EPIC and CacheBlend, at least 2x lower prefill once six or more memories are retrieved, and the vLLM connector beating both full prefill and prefix caching on time to first token when memories repeat in different orders. If we miss one, we report what we measured.</aside>
+</section></div><div class="num">20 / 21</div></div>
+<div class="frame" id="s21"><div class="stage"><section id="questions" data-transition="fade" style="background:#16213A;color:#F3EFE6;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:56px">
+<h1 style="font-family:'Space Grotesk', Arial, sans-serif;font-size:120px;font-weight:700;line-height:1.05;letter-spacing:-2px;text-align:center">Questions</h1>
+<div style="display:flex;flex-direction:row;gap:10px">
+<div style="width:96px;height:40px;background:#3A4766;border-radius:8px"></div>
+<div style="width:140px;height:40px;background:#D9772B;border-radius:8px"></div>
+<div style="width:140px;height:40px;background:#F5D3B3;border-radius:8px"></div>
+<div style="width:140px;height:40px;background:#D9772B;border-radius:8px"></div>
+<div style="width:96px;height:40px;background:#6E95CF;border-radius:8px"></div>
+</div>
+<aside>Thanks. Happy to take questions.</aside>
+</section></div><div class="num">21 / 21</div></div>
+<script>
+function fit(){document.querySelectorAll('.stage').forEach(s=>{const sec=s.firstElementChild;sec.style.transform='scale('+(s.clientWidth/1920)+')';});}
+document.querySelectorAll('.frame').forEach(f=>{const a=f.querySelector('aside');if(a){const n=document.createElement('div');n.className='note';n.textContent=a.textContent;f.insertBefore(n,f.querySelector('.num'));}});
+document.getElementById('nt').onchange=e=>document.body.classList.toggle('notes',e.target.checked);
+addEventListener('resize',fit);fit();
+</script>
+</body>
+</html>

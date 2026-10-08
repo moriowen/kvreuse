@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Experiments and Results</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav class="top"><div class="in">
+  <span class="brand">KV reuse · Group 7</span>
+  <a href="index.html">1 · Overview</a>
+  <a href="pipeline.html">2 · One question, end to end</a>
+  <a href="methods.html">3 · The four methods</a>
+  <a href="experiments.html" class="on">4 · Experiments &amp; results</a>
+  <a href="codebase.html">5 · Codebase map</a>
+  <a href="slides.html">Slides</a>
+</div></nav>
+<main>
+<h1>Experiments and results</h1>
+<p class="lede">Six experiments. E0-E2 answer the core research question in Transformers. E3-E5 answer the serving question in vLLM and only start once the core works. Everything here comes from runs that exist; nothing is projected.</p>
+
+<h2>The experiment plan</h2>
+<div class="tablewrap card" style="padding:4px 8px">
+<table>
+<tr><th>ID</th><th>Question</th><th>Stack</th><th>Measurement</th><th>Status</th></tr>
+<tr><td><b>E0</b></td><td>Is the implementation correct?</td><td>Transformers</td><td>4 exactness checks, fp32, TF32 off; bf16 noise floor</td><td><span class="pill ok">passed</span></td></tr>
+<tr><td><b>E1</b></td><td>How much quality does each method keep?</td><td>Transformers</td><td>LoCoMo F1 vs. recompute budget 0-60%, one curve per method</td><td><span class="pill run">running</span></td></tr>
+<tr><td><b>E2</b></td><td>How much prefill is removed?</td><td>Transformers</td><td>prefill time and tokens computed vs. k</td><td><span class="pill todo">queued list</span></td></tr>
+<tr><td><b>E3</b></td><td>Does the connector cut latency?</td><td>vLLM</td><td>TTFT vs. k: full prefill, prefix caching, connector</td><td><span class="pill todo">needs C5</span></td></tr>
+<tr><td><b>E4</b></td><td>When does reuse beat prefix caching?</td><td>vLLM + Zipf</td><td>throughput and TTFT as reuse rate goes 0% → 100%</td><td><span class="pill todo">needs C4, C5</span></td></tr>
+<tr><td><b>E5</b></td><td>Does the connector match the reference?</td><td>vLLM vs. HF</td><td>same tokens, matching KV tensors, then near-identical greedy answers and F1</td><td><span class="pill todo">script ready</span></td></tr>
+</table>
+</div>
+<p>Rules every run follows: same saved retrievals, greedy decoding, one warm-up, median of 3 for timings, paired bootstrap CIs plus a conversation-level bootstrap. Headline F1 is categories 1-4; category 5 (adversarial, 446 questions) is reported on its own.</p>
+
+<h2>E0 · correctness gate <span class="pill ok">passed Oct 7</span></h2>
+<p>If E0 fails, every later number is meaningless, so the Slurm chain stops everything after it on failure. It only tests cases where an exact match is expected.</p>
+<div class="grid g2">
+  <div class="card"><b>(a) RoPE round trip</b><br><span style="font-size:.92rem">Shift keys away and back, get the originals. Zero shift is bit-for-bit identity.</span><div class="where">tests/test_e0.py (CPU, tiny model)</div></div>
+  <div class="card"><b>(b) Layer-0 shift</b><br><span style="font-size:.92rem">Shifted first-layer keys equal keys computed directly at the target position, tolerance growing with position.</span><div class="where">tests/test_e0.py</div></div>
+  <div class="card"><b>(c) 100% recompute = full prefill</b><br><span style="font-size:.92rem">The selective loop with every token selected must reproduce full prefill.</span><div class="where">tests + scripts/e0_real.py (real model)</div></div>
+  <div class="card"><b>(d) Identity case</b><br><span style="font-size:.92rem">A chunk reused exactly where, and after exactly what, it was cached equals full prefill.</span><div class="where">tests + scripts/e0_real.py</div></div>
+</div>
+
+<h3>Real model, 20 LoCoMo prompts, fp32, H100 (job 6092311)</h3>
+<div class="tablewrap card" style="padding:4px 8px">
+<table>
+<tr><th>Check</th><th class="num">worst max-abs logit error</th><th class="num">tolerance</th></tr>
+<tr><td>our hand-written forward vs. HF <code>model(ids)</code></td><td class="num mono">4.6e-5</td><td class="num mono">1e-3</td></tr>
+<tr><td>(c) 100% recompute vs. full prefill</td><td class="num mono">7.3e-5</td><td class="num mono">1e-3</td></tr>
+<tr><td>(d) identity case vs. full prefill</td><td class="num mono">4.2e-5</td><td class="num mono">1e-3</td></tr>
+</table>
+</div>
+<p>All three are more than 13× under the gate.</p>
+
+<h3>bf16 noise floor</h3>
+<p>The real runs use bf16. How much does bf16 alone move the output, compared with fp32? First answer token, same 20 prompts:</p>
+<div class="grid g3">
+  <div class="card stat"><div class="n mono">6.4e-4</div><div class="l">mean KL, bf16 vs fp32</div></div>
+  <div class="card stat"><div class="n mono">4.0e-3</div><div class="l">max KL</div></div>
+  <div class="card stat"><div class="n">100%</div><div class="l">top-1 token agreement</div></div>
+</div>
+<p>Any reuse error in E1 is read against this floor. If a method's KL is near 6e-4, its error is indistinguishable from bf16 rounding.</p>
+
+<h2>Smoke run · first numbers <span class="pill ok">ran</span></h2>
+<div class="callout warn">First 100 questions only, all from one conversation (conv-26), categories 1-4. bf16, H100, top-10 BM25. This shows the pipeline works end to end. It is not a reportable result.</div>
+
+<h3>F1 by question category: full prefill vs. re-positioning only</h3>
+<div class="card bars" id="f1bars"></div>
+
+<div class="grid g4">
+  <div class="card stat"><div class="n">0.244 → 0.129</div><div class="l">headline F1 (cat 1-4), full → re-positioning</div></div>
+  <div class="card stat"><div class="n mono">0.81</div><div class="l">mean first-token KL for re-positioning; over 1,000× the bf16 floor</div></div>
+  <div class="card stat"><div class="n">77%</div><div class="l">top-1 agreement with full prefill (floor: 100%)</div></div>
+  <div class="card stat"><div class="n">90.3%</div><div class="l">chunk store hit rate: 97 misses in 1,000 lookups</div></div>
+</div>
+<p>Reading: uncorrected reuse loses about half the F1 here, and only 5 of 100 answers match full prefill word for word. Temporal questions (category 2) take the biggest hit, 0.254 → 0.075. In several cases the reused model answers "the conversation does not provide any information" when full prefill finds the date, which fits the idea that a chunk cached alone hasn't linked its content to the other chunks. This is the gap methods 2-4 are supposed to close, and E1 measures how well they do.</p>
+
+<h3>Things to flag honestly</h3>
+<div class="grid g2">
+  <div class="card" style="font-size:.93rem"><b>Our full-prefill F1 (0.244) is well below AgentKVShift's 0.509.</b> They use LiCoMemory, a memory system with generated metadata; we use plain BM25 conversation chunks. Our answers average 13.8 words for a "short phrase" prompt, which pulls token F1 down. We report absolute and relative gaps, so the comparison is still fair within our setup. The full 1,986-question baseline will show whether conv-26 is typical.</div>
+  <div class="card" style="font-size:.93rem"><b>Category 3 is weak even with full prefill</b> (0.097 on 13 questions). These are open-domain questions that need inference beyond the text, and n is small. Worth checking on the full run before reading anything into it.</div>
+</div>
+
+<h2>Timing finding · cuDNN <span class="pill ok">found and fixed</span></h2>
+<p>Profiling (jobs 6092365, 6092397, 6092445, H100) found that PyTorch picked cuDNN's attention kernel, which rebuilds its execution plan for every new sequence length. Every LoCoMo prompt has a new length, so each call paid ~40-45 ms of plan building. We now exclude cuDNN by default (<code>SDPA_BACKENDS</code> in <code>kvreuse/forward.py</code>).</p>
+<h3>Median prefill, 12 distinct prompt lengths (~2.3K tokens)</h3>
+<div class="card bars" id="tbars"></div>
+<p>Without cuDNN overhead the reuse speedup shows up: re-positioning is 2.6× faster than full prefill (29.9 vs 78.9 ms). There's more headroom: a fresh 67-token forward still takes ~19 ms against a ~4 ms weight-read floor, because the hand-written layer loop launches ~1,500 small kernels per call. CUDA graphs or <code>torch.compile</code> are the next speedup.</p>
+<div class="callout bad">The E1 sweep (6092366) and baselines (6092367) were submitted before this fix. Their F1 is valid; their <code>prefill_ms</code> is not and won't be used. E2 timings will come from the fixed code.</div>
+
+<h2>In flight and next</h2>
+<div class="grid g2">
+  <div class="card">
+    <span class="pill run">job 6092366</span> <b>E1 sweep</b>
+    <p style="font-size:.9rem">16 configs over all 1,986 questions, each with first-token KL. Packed 4 per GPU task to stay under ICE's 50-job cap.</p>
+    <ul style="font-size:.88rem;margin:4px 0;padding-left:18px">
+      <li>re-positioning</li>
+      <li>EPIC k = 4, 8, 16, 32, 64</li>
+      <li>CacheBlend ratio 0.05, 0.10, 0.15, 0.30, 0.60</li>
+      <li>AgentKVShift ratio 0.05, 0.10, 0.15, 0.30, 0.60</li>
+    </ul>
+    <p class="where">pace/jobs/e1.txt · ~20 min per config on an H100</p>
+  </div>
+  <div class="card">
+    <span class="pill run">job 6092367</span> <b>Baselines</b>
+    <p style="font-size:.9rem"><code>full</code> (top-10 retrieved prompt, the reference) and <code>full_context</code> (whole 17K-31K-token conversation, no retrieval: the quality ceiling and the case prefix caching handles best).</p>
+    <p class="where">pace/baselines.sbatch</p>
+  </div>
+  <div class="card">
+    <span class="pill todo">ready</span> <b>E2 k-sweep</b>
+    <p style="font-size:.9rem">k = 2, 4, 6, 8, 10 using the first k of the saved top-10; full vs. AgentKVShift 10% vs. re-positioning, plus CacheBlend 15% at k = 10. 300 questions each. Success criterion: ≥2× prefill speedup at k ≥ 6.</p>
+    <p class="where">pace/jobs/e2.txt</p>
+  </div>
+  <div class="card">
+    <span class="pill todo">ready</span> <b>E5 connector check</b>
+    <p style="font-size:.9rem">Export conv-26's store, run the Transformers reference for the served mode, run vLLM with and without the connector, compare greedy answers. Same F1 alone proves nothing, so it compares tokens and KV first.</p>
+    <p class="where">pace/e5.sbatch · scripts/vllm_e5.py</p>
+  </div>
+</div>
+
+<h2>Success criteria (from the proposal)</h2>
+<div class="tablewrap card" style="padding:4px 8px">
+<table>
+<tr><th>#</th><th>Criterion</th><th>Answered by</th></tr>
+<tr><td>1</td><td>AgentKVShift within 0.02 absolute F1 of full prefill (or its own reported relative gap) at 10-15% budget, with re-positioning clearly lower</td><td>E1</td></tr>
+<tr><td>2</td><td>CacheBlend and EPIC: full quality-cost curve up to 60%, and the smallest budget (if any) within 0.02 F1</td><td>E1</td></tr>
+<tr><td>3</td><td>AgentKVShift cuts prefill time ≥2× at k ≥ 6</td><td>E2</td></tr>
+<tr><td>4</td><td>Connector beats full prefill and prefix caching on TTFT when entries repeat in different orders</td><td>E3, E4</td></tr>
+</table>
+</div>
+<p>Missing a criterion is still a result. If reuse loses more quality than the papers claim, we report that.</p>
+
+<p style="margin-top:32px"><a href="codebase.html">Next: codebase map →</a></p>
+</main>
+<script>
+function bars(el, rows, max, unit, dec) {
+  el.innerHTML = rows.map(([label, v, c]) =>
+    `<div class="row"><span>${label}</span><div class="track"><div class="fill" style="width:${(v / max * 100).toFixed(1)}%;background:${c}"></div></div><span class="mono" style="text-align:right">${v.toFixed(dec)}${unit}</span></div>`
+  ).join("");
+}
+const F = "var(--accent)", R = "var(--reused)";
+bars(document.getElementById("f1bars"), [
+  ["cat 1 multi-hop · full", 0.231, F], ["cat 1 · reposition", 0.132, R],
+  ["cat 2 temporal · full", 0.254, F], ["cat 2 · reposition", 0.075, R],
+  ["cat 3 open-dom · full", 0.097, F], ["cat 3 · reposition", 0.087, R],
+  ["cat 4 single-hop · full", 0.354, F], ["cat 4 · reposition", 0.263, R],
+  ["headline 1-4 · full", 0.244, F], ["headline · reposition", 0.129, R]
+], 0.4, "", 3);
+document.querySelector("#f1bars").insertAdjacentHTML("beforeend",
+  '<div class="legend" style="margin-top:8px"><span style="--c:var(--accent)">full prefill</span><span style="--c:var(--reused)">re-positioning only</span><span>n = 32 / 37 / 13 / 18</span></div>');
+bars(document.getElementById("tbars"), [
+  ["full · cuDNN on", 115.7, "var(--exact)"], ["full · cuDNN off", 78.9, F],
+  ["reposition · on", 75.1, "var(--exact)"], ["reposition · off", 29.9, R]
+], 120, " ms", 1);
+</script>
+</body>
+</html>

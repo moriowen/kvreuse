@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KV Reuse Walkthrough</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav class="top"><div class="in">
+  <span class="brand">KV reuse · Group 7</span>
+  <a href="index.html" class="on">1 · Overview</a>
+  <a href="pipeline.html">2 · One question, end to end</a>
+  <a href="methods.html">3 · The four methods</a>
+  <a href="experiments.html">4 · Experiments &amp; results</a>
+  <a href="codebase.html">5 · Codebase map</a>
+  <a href="slides.html">Slides</a>
+</div></nav>
+<main>
+<p class="muted">CS 6220 project walkthrough · state as of Oct 8, 2026</p>
+<h1>Prefill once, reuse anywhere</h1>
+<p class="lede">Non-prefix KV reuse for agent memory. We cache each memory chunk's KV once, move it to wherever the chunk lands in a new prompt, and measure how much answer quality each correction method buys back for how much recompute.</p>
+
+<h2>The problem in one picture</h2>
+<p>A memory agent retrieves a few chunks for each question and puts them before the question. Two questions about the same conversation often retrieve the same chunks in a different order. vLLM's prefix cache only matches identical leading tokens, so it stops matching right after the system prompt.</p>
+
+<div class="card">
+  <div class="muted" style="font-size:.85rem">Question 1 retrieves A, B, C</div>
+  <div class="strip">
+    <div class="seg-sys" style="flex:1.2">system</div>
+    <div class="seg-a" style="flex:2">chunk A</div>
+    <div class="seg-b" style="flex:2">chunk B</div>
+    <div class="seg-c" style="flex:2">chunk C</div>
+    <div class="seg-q" style="flex:1">question</div>
+  </div>
+  <div class="muted" style="font-size:.85rem;margin-top:12px">Question 2 retrieves C, A, D</div>
+  <div class="strip">
+    <div class="seg-sys" style="flex:1.2">system ✓ cached</div>
+    <div class="seg-c seg-miss" style="flex:2">chunk C ✗</div>
+    <div class="seg-a seg-miss" style="flex:2">chunk A ✗</div>
+    <div class="seg-d seg-miss" style="flex:2">chunk D ✗</div>
+    <div class="seg-q" style="flex:1">question</div>
+  </div>
+  <p style="font-size:.9rem;margin-top:10px">Prefix caching: only the system prompt hits. C and A were computed seconds ago but get prefilled again because they moved. <b>Our idea:</b> keep C's and A's KV, keyed by their tokens, and reuse it at the new position.</p>
+</div>
+
+<h3>Why it isn't free</h3>
+<div class="grid g2">
+  <div class="card">
+    <b>Error 1: position.</b> Keys carry their position through RoPE. A chunk cached at position 2 and reused at position 810 has keys rotated for the wrong place.
+    <p class="muted" style="font-size:.9rem">Fix is exact: rotate the cached keys by the position difference. Rotations add up, so one extra rotation does it.</p>
+  </div>
+  <div class="card">
+    <b>Error 2: missing context.</b> A chunk cached alone never attended to the chunks now in front of it. Its KV at layers 1 to 31 is slightly wrong.
+    <p class="muted" style="font-size:.9rem">No rotation fixes this. The four methods differ in which tokens they recompute to patch it. That trade-off is the project.</p>
+  </div>
+</div>
+
+<h2>Research question</h2>
+<div class="callout">
+  <b>Core:</b> How much prefill can non-prefix KV reuse remove from a memory-augmented agent, and how do different ways of correcting reused KV trade answer quality against prefill cost?<br>
+  <b>Secondary:</b> Served through unmodified vLLM, does reuse lower time to first token and raise throughput, and how often must memories repeat before it beats prefix caching?
+</div>
+<p>The contribution is engineering and evaluation. The correction algorithms come from EPIC, CacheBlend and AgentKVShift. What's new is comparing all of them on one conversational memory workload under one budget formula, an independent reimplementation of AgentKVShift (it has no public code), and serving reuse through vLLM's public connector API without editing vLLM.</p>
+
+<h2>Fixed setup</h2>
+<div class="grid g4">
+  <div class="card stat"><div class="n">Mistral-7B</div><div class="l">Instruct v0.3, same model AgentKVShift reports on LoCoMo</div></div>
+  <div class="card stat"><div class="n">LoCoMo</div><div class="l">10 long conversations, 1,986 questions, 17K-31K tokens each</div></div>
+  <div class="card stat"><div class="n">~256 tok</div><div class="l">chunk size: whole turns, never split, with date header</div></div>
+  <div class="card stat"><div class="n">top-10</div><div class="l">BM25 retrieval, saved once to disk, read by every run</div></div>
+  <div class="card stat"><div class="n">H100</div><div class="l">PACE ICE, Slurm jobs chained by dependency</div></div>
+  <div class="card stat"><div class="n">vLLM 0.27.1</div><div class="l">pinned; connector API changes between releases</div></div>
+</div>
+
+<h2>Where we are</h2>
+<p>The proposal planned E0 to pass in week 9. It passed in week 7 on the real model, and the vLLM connector is already written.</p>
+<div class="tablewrap card" style="padding:4px 8px">
+<table>
+<tr><th>Piece</th><th>What it is</th><th>Status</th></tr>
+<tr><td>C1</td><td>Chunk LoCoMo, BM25 top-10, save retrievals</td><td><span class="pill ok">built, ran on PACE</span></td></tr>
+<tr><td>C2</td><td>Chunk KV store, RoPE re-rotation, selective-recompute forward, 4 methods</td><td><span class="pill ok">built</span></td></tr>
+<tr><td>E0</td><td>Correctness gate on the real model</td><td><span class="pill ok">passed Oct 7</span></td></tr>
+<tr><td>Smoke</td><td>100 questions, full vs. re-positioning</td><td><span class="pill ok">ran</span></td></tr>
+<tr><td>Baselines</td><td>full and full-context over all 1,986 questions</td><td><span class="pill run">submitted (job 6092367)</span></td></tr>
+<tr><td>E1</td><td>16-config quality sweep across all methods</td><td><span class="pill run">submitted (job 6092366)</span></td></tr>
+<tr><td>E2</td><td>prefill time vs. k</td><td><span class="pill todo">job list ready</span></td></tr>
+<tr><td>C3 / E5</td><td>vLLM connector (method 1) and its match check against Transformers</td><td><span class="pill ok">connector built</span> <span class="pill todo">E5 not run</span></td></tr>
+<tr><td>C4, C5 / E3, E4</td><td>Zipf workload, serving benchmark</td><td><span class="pill todo">not built</span></td></tr>
+</table>
+</div>
+<p>Details and numbers are on <a href="experiments.html">page 4</a>.</p>
+
+<h2>If you have two minutes with the professor</h2>
+<div class="card">
+<ol style="margin:0;padding-left:20px">
+  <li><b>Problem.</b> Memory agents put retrieved chunks before each question. The same chunks come back in new orders, and vLLM's prefix cache misses them, so they get prefilled again.</li>
+  <li><b>Idea.</b> Cache each chunk's KV once under a hash of its tokens. When it shows up again, rotate its keys to the new position (exact) and patch the missing cross-chunk attention by recomputing a few tokens.</li>
+  <li><b>Study.</b> Four ways to pick those tokens (none, chunk starts, top deviating tokens, probes plus a mean shift), one shared recompute loop, one budget formula, on Mistral-7B and LoCoMo.</li>
+  <li><b>Done.</b> Pipeline, store, all four methods and the vLLM connector are built. The correctness gate passed on the real model with logit errors around 5e-5 against a 1e-3 tolerance.</li>
+  <li><b>First signal.</b> On 100 questions, uncorrected reuse drops F1 from 0.244 to 0.129, temporal questions worst, while prefill gets 2.6× faster (78.9 → 29.9 ms) after we removed a cuDNN overhead. That gap is what the correction methods are supposed to close.</li>
+  <li><b>Next.</b> The 16-config quality sweep and full baselines are running on PACE. Then the k-sweep for timing, the vLLM match check, and the serving benchmark.</li>
+</ol>
+</div>
+
+<h2>How to read these pages</h2>
+<div class="grid g2">
+  <a class="card" href="pipeline.html" style="text-decoration:none;color:inherit"><b>2 · One question, end to end →</b><br><span class="muted">Follow a single LoCoMo question from raw conversation to F1 score, with the file that does each step.</span></a>
+  <a class="card" href="methods.html" style="text-decoration:none;color:inherit"><b>3 · The four methods →</b><br><span class="muted">Interactive token-by-layer grid showing what each method recomputes, and how the budget is charged.</span></a>
+  <a class="card" href="experiments.html" style="text-decoration:none;color:inherit"><b>4 · Experiments &amp; results →</b><br><span class="muted">E0-E5, what has run, the real numbers so far, what they do and don't mean.</span></a>
+  <a class="card" href="codebase.html" style="text-decoration:none;color:inherit"><b>5 · Codebase map →</b><br><span class="muted">Every file, how they depend on each other, how jobs flow on PACE.</span></a>
+</div>
+<footer>Built from the repo at commit a07337e plus local result files in <code>results/</code>. Numbers only come from runs that exist.</footer>
+</main>
+</body>
+</html>

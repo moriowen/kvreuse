@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codebase Map</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  .layer { border: 1px dashed var(--line); border-radius: 12px; padding: 10px 12px; margin: 10px 0; }
+  .layer > .t { font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-bottom: 6px; }
+  .mods { display: flex; flex-wrap: wrap; gap: 8px; }
+  .mod { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: .85rem; }
+  .mod b { font-family: ui-monospace, Menlo, monospace; font-size: .85rem; }
+  .mod span { display: block; color: var(--muted); font-size: .78rem; }
+  .mod.core { border-color: var(--fresh); }
+  .mod.vllm { border-color: var(--shift); }
+  .arrow { text-align: center; color: var(--muted); font-size: .85rem; }
+  .chain { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .chain .j { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; font-size: .88rem; }
+  .chain .j small { display: block; }
+</style>
+</head>
+<body>
+<nav class="top"><div class="in">
+  <span class="brand">KV reuse · Group 7</span>
+  <a href="index.html">1 · Overview</a>
+  <a href="pipeline.html">2 · One question, end to end</a>
+  <a href="methods.html">3 · The four methods</a>
+  <a href="experiments.html">4 · Experiments &amp; results</a>
+  <a href="codebase.html" class="on">5 · Codebase map</a>
+  <a href="slides.html">Slides</a>
+</div></nav>
+<main>
+<h1>Codebase map</h1>
+<p class="lede">About 2,600 lines in total. A small Python package (<code>kvreuse/</code>), thin entry-point scripts, CPU unit tests, and Slurm job files for PACE. No upstream source is modified: vLLM, Transformers, the model and LoCoMo are used as published.</p>
+
+<h2>Layers</h2>
+<div class="layer">
+  <div class="t">Slurm jobs on PACE · <code>pace/</code></div>
+  <div class="mods">
+    <div class="mod"><b>submit.sh</b><span>prepare → e0 → smoke → baselines</span></div>
+    <div class="mod"><b>array.sbatch</b><span>runs N lines of a job list per GPU</span></div>
+    <div class="mod"><b>jobs/e1.txt, e2.txt</b><span>one command per config</span></div>
+    <div class="mod"><b>e5.sbatch</b><span>export store, HF vs vLLM</span></div>
+    <div class="mod"><b>env.sh</b><span>paths, model id, venv</span></div>
+  </div>
+</div>
+<div class="arrow">↓ calls</div>
+<div class="layer">
+  <div class="t">Entry points · <code>scripts/</code></div>
+  <div class="mods">
+    <div class="mod"><b>prepare_data.py</b><span>C1: chunk, tokenize, BM25, save</span></div>
+    <div class="mod"><b>e0_real.py</b><span>E0 gate + bf16 noise floor</span></div>
+    <div class="mod"><b>run_eval.py</b><span>one config over LoCoMo → jsonl + summary</span></div>
+    <div class="mod"><b>analyze.py</b><span>tables + bootstrap CIs</span></div>
+    <div class="mod"><b>profile_prefill.py</b><span>kernel-level timing</span></div>
+    <div class="mod vllm"><b>export_store.py</b><span>chunk KV → disk, vLLM layout</span></div>
+    <div class="mod vllm"><b>vllm_e5.py</b><span>run vLLM ± connector</span></div>
+  </div>
+</div>
+<div class="arrow">↓ imports</div>
+<div class="layer">
+  <div class="t">Package · <code>kvreuse/</code></div>
+  <div class="mods">
+    <div class="mod"><b>locomo.py</b><span>load, chunk, prompts (C1)</span></div>
+    <div class="mod"><b>retrieval.py</b><span>BM25 / dense top-k (C1)</span></div>
+    <div class="mod"><b>prompt.py</b><span>token-id prompt layout</span></div>
+    <div class="mod"><b>metrics.py</b><span>LoCoMo F1, bootstrap</span></div>
+    <div class="mod core"><b>rope.py</b><span>re-rotate keys by delta</span></div>
+    <div class="mod core"><b>store.py</b><span>chunk KV cache, assemble()</span></div>
+    <div class="mod core"><b>forward.py</b><span>manual layer loop, selective prefill</span></div>
+    <div class="mod core"><b>methods.py</b><span>the 4 plans + full</span></div>
+    <div class="mod vllm"><b>connector_logic.py</b><span>match, align, slots (no vLLM import)</span></div>
+    <div class="mod vllm"><b>vllm_connector.py</b><span>ChunkReuseConnector (C3)</span></div>
+  </div>
+  <div class="legend" style="margin-top:8px">
+    <span style="--c:var(--fresh)">C2 core: the research question lives here</span>
+    <span style="--c:var(--shift)">C3: vLLM serving path</span>
+  </div>
+</div>
+
+<h3>Inside the core</h3>
+<svg viewBox="0 0 640 170" width="100%" style="max-width:640px" role="img" aria-label="Module dependencies inside the core">
+  <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/></marker></defs>
+  <g font-family="ui-monospace,Menlo,monospace" font-size="12" text-anchor="middle">
+    <rect x="250" y="10" width="140" height="32" rx="8" fill="var(--panel)" stroke="var(--fresh)"/><text x="320" y="31" fill="var(--ink)">run_eval.py</text>
+    <rect x="20" y="70" width="130" height="32" rx="8" fill="var(--panel)" stroke="var(--fresh)"/><text x="85" y="91" fill="var(--ink)">methods.py</text>
+    <rect x="255" y="70" width="130" height="32" rx="8" fill="var(--panel)" stroke="var(--fresh)"/><text x="320" y="91" fill="var(--ink)">store.py</text>
+    <rect x="490" y="70" width="130" height="32" rx="8" fill="var(--panel)" stroke="var(--shift)"/><text x="555" y="91" fill="var(--ink)">connector_logic</text>
+    <rect x="120" y="128" width="130" height="32" rx="8" fill="var(--panel)" stroke="var(--fresh)"/><text x="185" y="149" fill="var(--ink)">forward.py</text>
+    <rect x="390" y="128" width="130" height="32" rx="8" fill="var(--panel)" stroke="var(--fresh)"/><text x="455" y="149" fill="var(--ink)">rope.py</text>
+  </g>
+  <g stroke="var(--muted)" stroke-width="1.3" fill="none" marker-end="url(#a)">
+    <path d="M290 42 L110 68"/><path d="M320 42 L320 68"/><path d="M300 42 L200 126"/>
+    <path d="M85 102 L160 126"/><path d="M300 102 L210 126"/><path d="M340 102 L430 126"/>
+    <path d="M200 145 L388 145"/><path d="M540 102 L480 126"/><path d="M490 86 L387 86"/>
+  </g>
+</svg>
+<p class="muted" style="font-size:.88rem">Arrows point from importer to imported. <code>rope.py</code> is the leaf: the Transformers path and the vLLM connector both rotate keys with the same math, which is what makes E5 a meaningful comparison.</p>
+
+<h2>File by file</h2>
+<div class="tablewrap card" style="padding:4px 8px">
+<table>
+<tr><th>File</th><th class="num">lines</th><th>Job</th><th>Worth knowing</th></tr>
+<tr><td><code>kvreuse/forward.py</code></td><td class="num">256</td><td><code>ModelView</code>, <code>selective_prefill</code>, <code>full_prefill</code>, <code>greedy_decode</code>, budget formula</td><td>Drives HF's layer modules by hand with an explicit mask. Excludes cuDNN attention.</td></tr>
+<tr><td><code>kvreuse/methods.py</code></td><td class="num">186</td><td>FullRecompute, Reposition, RepositionAligned, EPIC, CacheBlend, AgentKVShift</td><td>Each is ~15-40 lines: <code>initial_set</code> + <code>on_layer</code>. Our choices where papers are silent live in docstrings.</td></tr>
+<tr><td><code>kvreuse/store.py</code></td><td class="num">120</td><td><code>ChunkStore</code>, <code>assemble()</code></td><td>SHA-256 keyed; collision check compares ids.</td></tr>
+<tr><td><code>kvreuse/rope.py</code></td><td class="num">39</td><td><code>shift_keys</code></td><td>NeoX pairing (dim i with i + D/2). fp32 angles, cast once. Always from canonical position.</td></tr>
+<tr><td><code>kvreuse/prompt.py</code></td><td class="num">53</td><td><code>PromptBuilder</code></td><td>Never decode and re-encode. Layout checked against the official chat template.</td></tr>
+<tr><td><code>kvreuse/locomo.py</code></td><td class="num">119</td><td>chunking, questions, LoCoMo prompts</td><td>Prompts copied from LoCoMo's own eval code (typo "wriiten" kept as in the original).</td></tr>
+<tr><td><code>kvreuse/retrieval.py</code></td><td class="num">47</td><td>BM25, embedding retriever</td><td>Ties broken by index, so retrieval is deterministic.</td></tr>
+<tr><td><code>kvreuse/metrics.py</code></td><td class="num">82</td><td>LoCoMo scorer port, <code>paired_bootstrap</code></td><td>Bootstrap can resample whole conversations.</td></tr>
+<tr><td><code>kvreuse/connector_logic.py</code></td><td class="num">129</td><td>segment matching, block alignment, packed re-rotation</td><td>No vLLM import, so it's unit-tested on a laptop.</td></tr>
+<tr><td><code>kvreuse/vllm_connector.py</code></td><td class="num">162</td><td><code>ChunkReuseConnector</code> (KVConnectorBase_V1)</td><td>Scheduler and worker sides run in different processes; each loads from the store dir.</td></tr>
+<tr><td><code>scripts/run_eval.py</code></td><td class="num">197</td><td>the experiment driver</td><td>Asserts assembled ids == reference prompt on every question.</td></tr>
+<tr><td><code>tests/</code></td><td class="num">323</td><td>E0 logic, C1, connector logic, analyze</td><td>Tiny random Mistral on CPU, under a second.</td></tr>
+</table>
+</div>
+
+<h2>How runs flow on PACE</h2>
+<p>Code is rsynced from the laptop to <code>~/scratch/kvreuse</code> (home is only ~15 GB). Jobs are chained with Slurm <code>afterok</code>, so a failed E0 cancels everything after it.</p>
+<div class="chain card">
+  <div class="j"><b>prepare</b><small class="muted">CPU · ~1 min</small></div>→
+  <div class="j"><b>e0</b><small class="muted">H100 · gate</small></div>→
+  <div class="j"><b>smoke</b><small class="muted">100 questions</small></div>→
+  <div class="j"><b>baselines</b><small class="muted">1,986 questions × 2</small></div>
+  <span class="muted" style="margin-left:10px">then, by hand:</span>
+  <div class="j"><b>array: E1</b><small class="muted">4 tasks × 4 configs</small></div>
+  <div class="j"><b>array: E2</b><small class="muted">2 tasks × 8 configs</small></div>
+  <div class="j"><b>e5</b><small class="muted">vLLM venv</small></div>
+</div>
+<div class="grid g2">
+  <div class="card" style="font-size:.92rem"><b>Two venvs.</b> vLLM 0.27.1 pins its own torch, so it gets a separate Python 3.12 venv. Our package is installed there with <code>--no-deps</code>.</div>
+  <div class="card" style="font-size:.92rem"><b>Two code copies.</b> <code>~/scratch/kvreuse</code> is frozen while E1 and baselines run (each config rereads the code). New work runs from <code>~/scratch/kvreuse-dev</code>.</div>
+  <div class="card" style="font-size:.92rem"><b>Cluster limits.</b> 50 submitted jobs per user (array tasks count, shared with other coursework) and a cap on GPU × requested minutes. Hence packing several configs per array task.</div>
+  <div class="card" style="font-size:.92rem"><b>Model weights.</b> Ungated mirror <code>unsloth/mistral-7b-instruct-v0.3</code>; its weight shards have the same SHA-256 as the official gated repo. Every summary records the model id.</div>
+</div>
+
+<h2>Commands</h2>
+<pre># laptop
+.venv/bin/python -m pytest                        # E0 logic, CPU, &lt;1 s
+
+# PACE login node
+bash pace/setup.sh                                # venv, LoCoMo, tests
+bash pace/submit.sh --with-baselines              # prepare -> e0 -> smoke -> baselines
+sbatch --array=0-3 --export=ALL,PER_TASK=4 pace/array.sbatch pace/jobs/e1.txt
+sbatch --array=0-1 --export=ALL,PER_TASK=8 pace/array.sbatch pace/jobs/e2.txt
+
+# one config by hand (inside a GPU job)
+python scripts/run_eval.py --method agentkvshift --budget 0.1 --kl
+python scripts/analyze.py results/full_top10_bf16.jsonl results/*.jsonl --out results/table.md</pre>
+
+<h2>Not built yet</h2>
+<div class="grid g2">
+  <div class="card"><b>C4 · Zipf workload generator</b><br><span class="muted" style="font-size:.9rem">Requests over a pool of entries with Zipf popularity; the exponent sets how often entries repeat. Needed for E4.</span></div>
+  <div class="card"><b>C5 · Serving benchmark harness</b><br><span class="muted" style="font-size:.9rem">vLLM's benchmark tool with a custom dataset: TTFT, latency, throughput. Needed for E3 and E4.</span></div>
+</div>
+
+<p style="margin-top:32px"><a href="index.html">← Back to overview</a></p>
+</main>
+</body>
+</html>

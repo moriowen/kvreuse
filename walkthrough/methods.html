@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Four Correction Methods</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  #grid { width: 100%; overflow-x: auto; }
+  #grid svg { display: block; min-width: 560px; }
+  .ctrl { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; margin: 10px 0; }
+  .ctrl input[type=range] { width: 220px; accent-color: var(--accent); }
+  #readout { font-variant-numeric: tabular-nums; }
+  .mcard h3 { margin-top: 4px; }
+</style>
+</head>
+<body>
+<nav class="top"><div class="in">
+  <span class="brand">KV reuse · Group 7</span>
+  <a href="index.html">1 · Overview</a>
+  <a href="pipeline.html">2 · One question, end to end</a>
+  <a href="methods.html" class="on">3 · The four methods</a>
+  <a href="experiments.html">4 · Experiments &amp; results</a>
+  <a href="codebase.html">5 · Codebase map</a>
+  <a href="slides.html">Slides</a>
+</div></nav>
+<main>
+<h1>The four correction methods</h1>
+<p class="lede">All four run through the same loop (page 2, step 6). They differ only in which tokens get recomputed at which layers. Each one bets that the reuse error lives in a different place.</p>
+
+<h2>Token × layer view</h2>
+<p>Columns are prompt tokens (a toy prompt: short system prefix, three chunks of 20 tokens, a question). Rows are decoder layers. Pick a method and drag the budget.</p>
+
+<div class="card">
+  <div class="tabs" id="tabs"></div>
+  <div class="ctrl">
+    <label>budget knob <input type="range" id="r" min="0" max="0.6" step="0.05" value="0.15"></label>
+    <span id="readout" class="mono"></span>
+  </div>
+  <div id="grid"></div>
+  <div class="legend">
+    <span style="--c:var(--exact)">system prefix (exact, cached)</span>
+    <span style="--c:var(--reused)">reused KV (re-rotated)</span>
+    <span style="--c:var(--fresh)">recomputed fresh</span>
+    <span style="--c:var(--shift)">reused + estimated offset</span>
+    <span style="--c:var(--question)">question (always fresh)</span>
+  </div>
+  <p id="explain" style="font-size:.93rem"></p>
+</div>
+
+<h2>Budget accounting: one formula for everyone</h2>
+<div class="callout">
+  <span class="mono">budget = Σ<sub>layers</sub> |reusable tokens with fresh QKV| / (32 layers × reusable tokens)</span>
+  <p style="margin-top:6px">Layers run in full before the selection layer, and the selection layer itself, are charged in full. CacheBlend and AgentKVShift have to compute QKV for every token at layer 1 to know which tokens deviate, so a "15%" CacheBlend actually costs (2 + 30 × 0.15) / 32 ≈ 20%. The grid's readout shows this charged number next to the knob value.</p>
+</div>
+<p>This matters for the comparison: papers often quote only the selection ratio. Charging every method the same way is one of the things our study adds. The code is <code>PrefillResult.budget()</code> in <code>kvreuse/forward.py</code>.</p>
+
+<h2>Method by method</h2>
+<div class="grid g2">
+  <div class="card mcard">
+    <span class="pill todo">method 1</span>
+    <h3>Re-positioning only</h3>
+    <p style="font-size:.93rem">Re-rotate keys, recompute nothing except the question. Bet: the missing cross-chunk attention doesn't matter much. Cheapest possible. It's also the only method vLLM can serve without scheduler changes, so its quality cost is what the connector pays.</p>
+    <p class="where">methods.py · <code>Reposition</code> (and <code>RepositionAligned</code> for the vLLM 16-token-block version)</p>
+  </div>
+  <div class="card mcard">
+    <span class="pill todo">method 2</span>
+    <h3>Boundary (EPIC)</h3>
+    <p style="font-size:.93rem">Recompute the first k tokens of every chunk, at every layer. Bet: a chunk cached alone treats its first tokens as an attention sink, which is wrong once it sits mid-prompt. Static choice, no selection layer. Sweep k = 4, 8, 16, 32, 64.</p>
+    <p class="where">methods.py · <code>EPIC</code> · paper: arXiv 2410.15332</p>
+  </div>
+  <div class="card mcard">
+    <span class="pill todo">method 3</span>
+    <h3>Dynamic selection (CacheBlend)</h3>
+    <p style="font-size:.93rem">Run layers 0 and 1 for every token. At layer 1, rank chunk tokens by how far their fresh V is from the reused V. Keep the top ratio (global across chunks) and recompute only those from then on. Bet: the error is sparse but could be anywhere.</p>
+    <p class="where">methods.py · <code>CacheBlend</code> · follows the released code (V only, one selection, global ratio), not the paper. Paper reports 2.2-3.3× lower TTFT within 0.02 F1 on RAG.</p>
+  </div>
+  <div class="card mcard">
+    <span class="pill todo">method 4</span>
+    <h3>Offset correction (AgentKVShift)</h3>
+    <p style="font-size:.93rem">Same layer-1 check, but per chunk: top tokens by K deviation and by V deviation become probes. Probes are recomputed. At each later layer the chunk's mean probe error is added to every other token in that chunk. Bet: most of the error is one shared shift per chunk.</p>
+    <p class="where">methods.py · <code>AgentKVShift</code> · our reimplementation of Algorithm 1 (no public code). Paper: 0.491 vs 0.509 F1 for full recompute on LoCoMo, Mistral-7B, 10% budget. Main comparison point.</p>
+  </div>
+</div>
+
+<h2>Sanity properties the tests enforce</h2>
+<div class="grid g3">
+  <div class="card" style="font-size:.92rem">Every method at 100% budget equals full prefill.</div>
+  <div class="card" style="font-size:.92rem">Reuse error is real (nonzero) for re-positioning and shrinks as the budget grows.</div>
+  <div class="card" style="font-size:.92rem">Selection layers are charged in full by the budget formula.</div>
+  <div class="card" style="font-size:.92rem">AgentKVShift's offsets actually move non-probe KV.</div>
+  <div class="card" style="font-size:.92rem">Recompute set can only shrink with depth (a plan returning a token outside S raises).</div>
+  <div class="card" style="font-size:.92rem">All on a tiny random Mistral on CPU, in under a second: <code>tests/test_e0.py</code>.</div>
+</div>
+
+<p style="margin-top:32px"><a href="experiments.html">Next: experiments and results →</a></p>
+</main>
+
+<script>
+(function () {
+  const P = 6, C = 20, NCH = 3, Q = 6, N = P + C * NCH + Q, LTOT = 32;
+  const ROWS = [0, 1, 2, 3, 4, 8, 16, 31];
+  const METHODS = {
+    full: "Full prefill (reference)",
+    reposition: "1 · Re-positioning",
+    epic: "2 · EPIC",
+    cacheblend: "3 · CacheBlend",
+    agentkvshift: "4 · AgentKVShift"
+  };
+  let cur = "cacheblend";
+
+  // deterministic fake deviation scores; chunk starts deviate more (attention-sink effect)
+  function rng(seed) { let s = seed; return () => (s = (s * 1103515245 + 12345) % 2147483648) / 2147483648; }
+  const rnd = rng(7), dV = [], dK = [];
+  for (let i = 0; i < N; i++) {
+    const j = (i - P) % C, boost = j >= 0 && j < 3 ? 0.6 - 0.15 * j : 0;
+    dV.push(rnd() * 0.8 + boost); dK.push(rnd() * 0.8 + boost * 0.8);
+  }
+  const chunkOf = i => (i >= P && i < P + C * NCH) ? Math.floor((i - P) / C) : -1;
+  const topk = (idx, score, k) => idx.slice().sort((a, b) => score[b] - score[a]).slice(0, k);
+
+  function plan(m, r) {
+    // returns state(i, layer) in {"exact","reused","fresh","shift","q"} and charged budget
+    const chunkIdx = [...Array(N).keys()].filter(i => chunkOf(i) >= 0);
+    let sel = new Set(), fromLayer = 0, shifted = false;
+    if (m === "full") chunkIdx.forEach(i => sel.add(i));
+    if (m === "epic") { const k = Math.round(r * C); for (let c = 0; c < NCH; c++) for (let j = 0; j < k; j++) sel.add(P + c * C + j); }
+    if (m === "cacheblend") { fromLayer = 2; topk(chunkIdx, dV, Math.ceil(r * chunkIdx.length)).forEach(i => sel.add(i)); }
+    if (m === "agentkvshift") {
+      fromLayer = 2; shifted = true;
+      for (let c = 0; c < NCH; c++) {
+        const idx = chunkIdx.filter(i => chunkOf(i) === c), b = Math.ceil(r * C);
+        topk(idx, dK, b).forEach(i => sel.add(i)); topk(idx, dV, b).forEach(i => sel.add(i));
+      }
+    }
+    const state = (i, l) => {
+      if (i < P) return "exact";
+      if (i >= N - Q) return "q";
+      if (m === "full") return "fresh";
+      if (fromLayer && l < fromLayer) return "fresh";
+      if (sel.has(i)) return "fresh";
+      return shifted && l >= fromLayer ? "shift" : "reused";
+    };
+    let fresh = 0;
+    for (let l = 0; l < LTOT; l++) for (const i of chunkIdx) if (state(i, l) === "fresh") fresh++;
+    return { state, budget: fresh / (LTOT * chunkIdx.length), nsel: sel.size };
+  }
+
+  const tabs = document.getElementById("tabs");
+  for (const [k, v] of Object.entries(METHODS)) {
+    const b = document.createElement("button"); b.textContent = v; b.dataset.m = k;
+    b.onclick = () => { cur = k; draw(); }; tabs.appendChild(b);
+  }
+  const slider = document.getElementById("r");
+  slider.oninput = draw;
+
+  const EXPLAIN = {
+    full: "Every chunk token is recomputed at every layer. This is the quality reference all methods are compared against (budget 100%).",
+    reposition: "Chunk KV is used as is after re-rotation. Only the question runs through the model. Budget 0%, independent of the knob.",
+    epic: "The first k tokens of every chunk are recomputed at every layer (here k = knob × chunk length). No selection layer, so the budget is just k / chunk length.",
+    cacheblend: "Layers 0 and 1 run for all tokens (charged). At layer 1 the tokens whose V deviates most, ranked across all chunks, are kept; only they continue from layer 2. Notice they cluster at chunk starts but not only there.",
+    agentkvshift: "Same layer-1 check, but per chunk, using K and V deviations separately; the union of probes is recomputed. Every other chunk token keeps its reused KV plus the chunk's mean probe error (purple)."
+  };
+
+  function draw() {
+    const r = +slider.value;
+    [...tabs.children].forEach(b => b.classList.toggle("on", b.dataset.m === cur));
+    slider.disabled = cur === "full" || cur === "reposition";
+    const p = plan(cur, r);
+    const cw = 9, ch = 18, gap = 1, left = 44, top = 22, W = left + N * (cw + gap) + 4, H = top + ROWS.length * (ch + gap) + 8;
+    const col = { exact: "var(--exact)", reused: "var(--reused)", fresh: "var(--fresh)", shift: "var(--shift)", q: "var(--question)" };
+    let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="token by layer recompute grid">`;
+    const lab = [["prefix", 0, P], ["chunk A", P, P + C], ["chunk B", P + C, P + 2 * C], ["chunk C", P + 2 * C, P + 3 * C], ["question", N - Q, N]];
+    for (const [t, a, b] of lab) s += `<text x="${left + ((a + b) / 2) * (cw + gap)}" y="14" font-size="10" text-anchor="middle" fill="var(--muted)">${t}</text>`;
+    ROWS.forEach((l, ri) => {
+      const y = top + ri * (ch + gap);
+      s += `<text x="${left - 6}" y="${y + 13}" font-size="10" text-anchor="end" fill="var(--muted)">L${l}</text>`;
+      if (ri === 5) s += `<text x="${left - 30}" y="${y - 2}" font-size="10" fill="var(--muted)">⋮</text>`;
+      for (let i = 0; i < N; i++) s += `<rect x="${left + i * (cw + gap)}" y="${y}" width="${cw}" height="${ch}" rx="1.5" fill="${col[p.state(i, l)]}"/>`;
+    });
+    s += "</svg>";
+    document.getElementById("grid").innerHTML = s;
+    const knob = slider.disabled ? "n/a" : (cur === "epic" ? `k = ${Math.round(r * C)} of ${C} tokens` : `ratio ${r.toFixed(2)}`);
+    document.getElementById("readout").textContent = `knob: ${knob}   →   charged budget: ${(p.budget * 100).toFixed(1)}%`;
+    document.getElementById("explain").textContent = EXPLAIN[cur];
+  }
+  draw();
+})();
+</script>
+</body>
+</html>
