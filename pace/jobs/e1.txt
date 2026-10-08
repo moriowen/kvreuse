@@ -1,0 +1,16 @@
+python scripts/run_eval.py --model "$MODEL" --method reposition --kl
+python scripts/run_eval.py --model "$MODEL" --method epic --epic-k 4 --kl
+python scripts/run_eval.py --model "$MODEL" --method epic --epic-k 8 --kl
+python scripts/run_eval.py --model "$MODEL" --method epic --epic-k 16 --kl
+python scripts/run_eval.py --model "$MODEL" --method epic --epic-k 32 --kl
+python scripts/run_eval.py --model "$MODEL" --method epic --epic-k 64 --kl
+python scripts/run_eval.py --model "$MODEL" --method cacheblend --budget 0.05 --kl
+python scripts/run_eval.py --model "$MODEL" --method cacheblend --budget 0.1 --kl
+python scripts/run_eval.py --model "$MODEL" --method cacheblend --budget 0.15 --kl
+python scripts/run_eval.py --model "$MODEL" --method cacheblend --budget 0.3 --kl
+python scripts/run_eval.py --model "$MODEL" --method cacheblend --budget 0.6 --kl
+python scripts/run_eval.py --model "$MODEL" --method agentkvshift --budget 0.05 --kl
+python scripts/run_eval.py --model "$MODEL" --method agentkvshift --budget 0.1 --kl
+python scripts/run_eval.py --model "$MODEL" --method agentkvshift --budget 0.15 --kl
+python scripts/run_eval.py --model "$MODEL" --method agentkvshift --budget 0.3 --kl
+python scripts/run_eval.py --model "$MODEL" --method agentkvshift --budget 0.6 --kl

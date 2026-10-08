@@ -1,0 +1,22 @@
+[project]
+name = "kvreuse"
+version = "0.1.0"
+description = "Non-prefix KV reuse for agent memory (CS 6220 Group 7)"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.5",
+    "transformers>=5.0",
+    "rank_bm25",
+    "nltk",
+    "numpy",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+embed = ["sentence-transformers"]  # only for prepare_data.py --retriever embed
+
+[tool.setuptools]
+packages = ["kvreuse"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

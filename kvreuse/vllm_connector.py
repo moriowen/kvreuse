@@ -1,0 +1,162 @@
+"""C3: serve re-rotated chunk KV to an unmodified vLLM (0.27.1) as the prompt prefix.
+
+Method 1 (re-positioning only). vLLM's contract is a contiguous prefix count, so non-prefix
+reuse happens here: each prompt is matched segment by segment against the chunk store, and
+the matched chunks' KV is re-rotated to where they land. vLLM then computes only the rest
+(the question plus at most 15 tokens of the last chunk, because hits are whole 16-token blocks).
+
+Register with:
+    --kv-transfer-config '{"kv_connector": "ChunkReuseConnector",
+        "kv_connector_module_path": "kvreuse.vllm_connector", "kv_role": "kv_both",
+        "kv_connector_extra_config": {"store_dir": "<dir>"}}'
+Run with prefix caching off (``--no-enable-prefix-caching``): otherwise vLLM registers the
+loaded (approximate) KV in its own prefix cache under exact token hashes.
+
+The scheduler-side and worker-side instances live in different processes and share only
+the metadata built here, so each loads what it needs from ``store_dir`` itself. Loads are
+synchronous (written in ``start_load_kv``), so the default CUDA-graph mode is unaffected.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+import torch
+from safetensors.torch import load_file
+from vllm.distributed.kv_transfer.kv_connector.v1.base import (
+    KVConnectorBase_V1,
+    KVConnectorMetadata,
+    KVConnectorRole,
+)
+from vllm.logger import init_logger
+
+from .connector_logic import Segment, StoreIndex, assemble_packed, matched_tokens, slot_mapping
+
+if TYPE_CHECKING:
+    from vllm.config import VllmConfig
+    from vllm.forward_context import ForwardContext
+    from vllm.v1.core.kv_cache_manager import KVCacheBlocks
+    from vllm.v1.core.sched.output import SchedulerOutput
+    from vllm.v1.kv_cache_interface import KVCacheConfig
+    from vllm.v1.request import Request
+
+logger = init_logger(__name__)
+_LAYER = re.compile(r"layers\.(\d+)\.")
+
+
+@dataclass
+class LoadPlan:
+    req_id: str
+    segments: list[Segment]
+    start: int  # first position to write (tokens before it were a local prefix-cache hit)
+    n: int  # tokens to write
+    slots: torch.Tensor  # [n] slot ids in the paged cache
+
+
+@dataclass
+class ChunkReuseMetadata(KVConnectorMetadata):
+    loads: list[LoadPlan] = field(default_factory=list)
+
+
+class ChunkReuseConnector(KVConnectorBase_V1):
+    def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole, kv_cache_config: "KVCacheConfig"):
+        super().__init__(vllm_config=vllm_config, role=role, kv_cache_config=kv_cache_config)
+        self._block_size = vllm_config.cache_config.block_size
+        store = self._kv_transfer_config.get_from_extra_config("store_dir", None)
+        if store is None:
+            raise ValueError("ChunkReuseConnector needs kv_connector_extra_config.store_dir")
+        self._store = Path(store)
+        self._index = StoreIndex.load(self._store)
+        # scheduler side
+        self._plans: dict[str, tuple[list[Segment], int, int]] = {}  # req_id -> (segs, start, n)
+        self._need_load: set[str] = set()
+        # worker side
+        self._kv: dict[str, torch.Tensor] = {}
+        self._inv_freq = torch.tensor(self._index.meta["inv_freq"], dtype=torch.float32)
+        self._head_dim = self._index.meta["head_dim"]
+        self._dump_dir = self._kv_transfer_config.get_from_extra_config("dump_dir", None)
+        self._dumped = 0
+        self.stats = {"requests": 0, "hit_tokens": 0, "prompt_tokens": 0}
+        logger.info("ChunkReuseConnector role=%s store=%s entries=%d", role, store, len(self._index.entries))
+
+    # ---------------- scheduler side ----------------
+
+    def get_num_new_matched_tokens(self, request: "Request", num_computed_tokens: int) -> tuple[int | None, bool]:
+        prompt = list(request.prompt_token_ids or [])
+        segs = self._index.match(prompt)  # deterministic, so repeated calls are side-effect free
+        n = matched_tokens(segs, len(prompt), num_computed_tokens, self._block_size)
+        self._plans[request.request_id] = (segs, num_computed_tokens, n)
+        return n, False
+
+    def update_state_after_alloc(self, request: "Request", blocks: "KVCacheBlocks", num_external_tokens: int):
+        if num_external_tokens > 0:
+            self._need_load.add(request.request_id)
+            segs, start, _ = self._plans[request.request_id]
+            self._plans[request.request_id] = (segs, start, num_external_tokens)
+
+    def build_connector_meta(self, scheduler_output: "SchedulerOutput") -> KVConnectorMetadata:
+        meta = ChunkReuseMetadata()
+        for req in scheduler_output.scheduled_new_reqs:
+            if req.req_id not in self._need_load:
+                continue
+            segs, start, n = self._plans[req.req_id]
+            slots = slot_mapping(req.block_ids[0], start, n, self._block_size)
+            meta.loads.append(LoadPlan(req.req_id, segs, start, n, slots))
+            self.stats["requests"] += 1
+            self.stats["hit_tokens"] += n
+            self.stats["prompt_tokens"] += len(req.prompt_token_ids or [])
+        # Preempted-and-resumed requests recompute from scratch (no reload): simple and correct.
+        self._need_load.clear()
+        return meta
+
+    def request_finished(self, request: "Request", block_ids: list[int]) -> tuple[bool, dict[str, Any] | None]:
+        self._plans.pop(request.request_id, None)
+        return False, None
+
+    # ---------------- worker side ----------------
+
+    def _get_kv(self, key: str) -> torch.Tensor:
+        kv = self._kv.get(key)
+        if kv is None:
+            kv = load_file(str(self._store / self._index.entries[key]["file"]), device="cuda")["kv"]
+            self._kv[key] = kv  # GPU-resident after first use
+        return kv
+
+    def start_load_kv(self, forward_context: "ForwardContext", **kwargs: Any) -> None:
+        meta = self._get_connector_metadata()
+        assert isinstance(meta, ChunkReuseMetadata)
+        if not meta.loads:
+            return
+        layers = []
+        for name, layer in forward_context.no_compile_layers.items():
+            cache = getattr(layer, "kv_cache", None)
+            m = _LAYER.search(name)
+            if cache is not None and m:
+                layers.append((int(m.group(1)), cache))
+        for plan in meta.loads:
+            kv = assemble_packed(plan.segments, plan.start, plan.n, self._get_kv, self._inv_freq, self._head_dim)
+            slots = plan.slots.to(kv.device)
+            blocks, offsets = slots // self._block_size, slots % self._block_size
+            for idx, cache in layers:
+                if cache.shape[1:] != (kv.shape[2], self._block_size, kv.shape[3]):
+                    raise RuntimeError(f"unexpected KV cache layout {tuple(cache.shape)}; "
+                                       "expected (blocks, kv_heads, block_size, 2*head_dim)")
+                cache[blocks, :, offsets] = kv[idx]
+            if self._dump_dir and self._dumped < 4:  # E5: compare against the Transformers path
+                Path(self._dump_dir).mkdir(parents=True, exist_ok=True)
+                torch.save({"req_id": plan.req_id, "start": plan.start, "kv": kv.cpu(),
+                            "segments": [s.__dict__ for s in plan.segments]},
+                           Path(self._dump_dir) / f"load_{self._dumped}.pt")
+                self._dumped += 1
+
+    def wait_for_layer_load(self, layer_name: str) -> None:
+        return
+
+    def save_kv_layer(self, layer_name: str, kv_layer: torch.Tensor, attn_metadata, **kwargs: Any) -> None:
+        return  # the store is built offline by scripts/export_store.py
+
+    def wait_for_save(self):
+        return
