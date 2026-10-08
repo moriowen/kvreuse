@@ -17,6 +17,8 @@ Optional ``kv_connector_extra_config`` keys:
                   memory and are copied to the GPU on every load, so the copy is in the
                   measured cost (E3/E4; the full ten-conversation store is ~33 GB).
     preload       load every entry at start-up (worker side), so no disk reads during a run.
+    profile       log the synchronized wall time of the first 20 loads (diagnosis only; the
+                  sync adds latency to those requests).
     require_seen  E4: a segment is served only after an earlier *finished* request contained
                   it, as if each chunk's KV were saved the first time it was prefilled. The
                   store itself is still built offline; saving is not timed.
@@ -29,6 +31,9 @@ synchronous (written in ``start_load_kv``), so the default CUDA-graph mode is un
 from __future__ import annotations
 
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor
+from itertools import accumulate
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -52,7 +57,7 @@ if TYPE_CHECKING:
     from vllm.v1.kv_cache_interface import KVCacheConfig
     from vllm.v1.request import Request
 
-logger = init_logger(__name__)
+logger = init_logger(f"vllm.{__name__}")  # under "vllm" so vLLM's handler prints it
 _LAYER = re.compile(r"layers\.(\d+)\.")
 
 
@@ -91,13 +96,54 @@ class ChunkReuseConnector(KVConnectorBase_V1):
         self._kv_device = self._kv_transfer_config.get_from_extra_config("kv_device", "cuda")
         self._require_seen = bool(self._kv_transfer_config.get_from_extra_config("require_seen", False))
         self._seen: set[str] = set()
+        self._profile = bool(self._kv_transfer_config.get_from_extra_config("profile", False))
+        self._n_loads = 0
         self.stats = {"requests": 0, "hit_tokens": 0, "prompt_tokens": 0}
         logger.info("ChunkReuseConnector role=%s store=%s entries=%d kv_device=%s require_seen=%s",
                     role, store, len(self._index.entries), self._kv_device, self._require_seen)
         if role == KVConnectorRole.WORKER and self._kv_transfer_config.get_from_extra_config("preload", False):
-            for key in self._index.entries:
+            t0 = time.perf_counter()
+            self._preload()
+            self._warm_up()
+            logger.info("ChunkReuseConnector preloaded %d entries to %s in %.1f s",
+                        len(self._kv), self._kv_device, time.perf_counter() - t0)
+
+    def _preload(self) -> None:
+        """Every entry, read in parallel. On cpu, into one pinned buffer: page-locking per
+        entry costs ~1 s per 32 MB file; one allocation of the whole store is far cheaper."""
+        keys = list(self._index.entries)
+        if self._kv_device != "cpu":
+            for key in keys:
                 self._load(key)
-            logger.info("ChunkReuseConnector preloaded %d entries to %s", len(self._kv), self._kv_device)
+            return
+        m = self._index.meta
+        per_tok = m["n_layers"] * m["n_kv_heads"] * 2 * m["head_dim"]
+        sizes = [len(self._index.entries[k]["ids"]) * per_tok for k in keys]
+        buf = torch.empty(sum(sizes), dtype=torch.bfloat16, pin_memory=True)
+        offs = [0, *accumulate(sizes)][:-1]
+
+        def read(i):
+            kv = load_file(str(self._store / self._index.entries[keys[i]]["file"]), device="cpu")["kv"]
+            dst = buf[offs[i] : offs[i] + sizes[i]].view(kv.shape)
+            dst.copy_(kv)
+            return keys[i], dst
+
+        with ThreadPoolExecutor(8) as pool:
+            self._kv.update(pool.map(read, range(len(keys))))
+
+    def _warm_up(self) -> None:
+        """One assembly on the GPU, so the first real request does not pay CUDA's lazy kernel
+        loading (~0.5 s in the E3 smoke run)."""
+        try:
+            key, e = next((k, e) for k, e in self._index.entries.items() if e["kind"] == "chunk")
+            seg = Segment(key, e["start"] + 16, len(e["ids"]), e["start"])
+            kv = assemble_packed([seg], seg.dst_start, seg.length, self._get_kv, self._inv_freq, self._head_dim)
+            scratch = torch.empty((1, kv.shape[2], self._block_size, kv.shape[3]), dtype=kv.dtype, device=kv.device)
+            n = min(self._block_size, kv.shape[1])
+            scratch[torch.zeros(n, dtype=torch.long, device=kv.device), :, torch.arange(n, device=kv.device)] = kv[0, :n]
+            torch.cuda.synchronize()
+        except Exception as exc:  # warm-up is an optimisation only
+            logger.warning("ChunkReuseConnector warm-up skipped: %s", exc)
 
     # ---------------- scheduler side ----------------
 
@@ -144,11 +190,13 @@ class ChunkReuseConnector(KVConnectorBase_V1):
         kv = self._kv.get(key)
         if kv is None:
             kv = load_file(str(self._store / self._index.entries[key]["file"]), device=self._kv_device)["kv"]
+            if self._kv_device == "cpu":
+                kv = kv.pin_memory()  # page-locked, so the per-load copy runs at full PCIe speed
             self._kv[key] = kv  # resident on kv_device after first use
         return kv
 
     def _get_kv(self, key: str) -> torch.Tensor:
-        return self._load(key).to("cuda")  # no copy when kv_device is cuda
+        return self._load(key).to("cuda", non_blocking=True)  # no copy when kv_device is cuda
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs: Any) -> None:
         meta = self._get_connector_metadata()
@@ -162,6 +210,10 @@ class ChunkReuseConnector(KVConnectorBase_V1):
             if cache is not None and m:
                 layers.append((int(m.group(1)), cache))
         for plan in meta.loads:
+            prof = self._profile and self._n_loads < 20
+            if prof:
+                torch.cuda.synchronize()
+                t0, resident = time.perf_counter(), sum(s.key in self._kv for s in plan.segments)
             kv = assemble_packed(plan.segments, plan.start, plan.n, self._get_kv, self._inv_freq, self._head_dim)
             slots = plan.slots.to(kv.device)
             blocks, offsets = slots // self._block_size, slots % self._block_size
@@ -170,6 +222,11 @@ class ChunkReuseConnector(KVConnectorBase_V1):
                     raise RuntimeError(f"unexpected KV cache layout {tuple(cache.shape)}; "
                                        "expected (blocks, kv_heads, block_size, 2*head_dim)")
                 cache[blocks, :, offsets] = kv[idx]
+            if prof:
+                torch.cuda.synchronize()
+                logger.info("ChunkReuseConnector load %d: %d tokens, %d/%d segments resident, %.1f ms",
+                            self._n_loads, plan.n, resident, len(plan.segments), (time.perf_counter() - t0) * 1e3)
+            self._n_loads += 1
             if self._dump_dir and self._dumped < 4:  # E5: compare against the Transformers path
                 Path(self._dump_dir).mkdir(parents=True, exist_ok=True)
                 torch.save({"req_id": plan.req_id, "start": plan.start, "kv": kv.cpu(),

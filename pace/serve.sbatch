@@ -23,7 +23,8 @@ MODE="${MODE:-e3}"
 CONFIGS=(full prefix connector)
 CONFIG="${CONFIGS[$SLURM_ARRAY_TASK_ID]}"
 REPS="${REPS:-3}"
-PORT=$(( 8100 + SLURM_ARRAY_TASK_ID ))
+PORT=$(( 20000 + SLURM_JOB_ID % 20000 ))  # unique per array task; two jobs can share a node
+export VLLM_ENGINE_READY_TIMEOUT_S=1800  # the connector preloads the store during engine start-up
 LIMIT_ARG=${LIMIT:+--limit $LIMIT}
 if [ "$MODE" = e3 ]; then
     STORE="${STORE:-$HOME/scratch/kvreuse-store-conv26}"
@@ -35,6 +36,18 @@ else
     CONC="${CONC:-16}"; SEEN=true
 fi
 
+if [ "$CONFIG" = connector ]; then
+    # Stage the store in node-local memory once per job: preloading 33 GB cold from Lustre
+    # takes >10 min per server start, from /dev/shm it is memory speed.
+    STAGE="/dev/shm/kvreuse-store-$SLURM_JOB_ID"
+    trap 'rm -rf "$STAGE"' EXIT
+    mkdir -p "$STAGE"
+    t0=$(date +%s)
+    ls "$STORE" | xargs -P 16 -I{} cp "$STORE/{}" "$STAGE/"
+    echo "staged $(du -sh "$STAGE" | cut -f1) in $(( $(date +%s) - t0 )) s"; df -h /dev/shm | tail -1
+    STORE="$STAGE"
+fi
+
 FLAGS=(--dtype bfloat16 --max-model-len 8192 --gpu-memory-utilization 0.85 --seed 0 --port "$PORT"
        --enable-prompt-tokens-details)
 case "$CONFIG" in
@@ -44,7 +57,7 @@ case "$CONFIG" in
         FLAGS+=(--no-enable-prefix-caching --kv-transfer-config "{\"kv_connector\": \"ChunkReuseConnector\",
             \"kv_connector_module_path\": \"kvreuse.vllm_connector\", \"kv_role\": \"kv_both\",
             \"kv_connector_extra_config\": {\"store_dir\": \"$STORE\", \"kv_device\": \"cpu\",
-            \"preload\": true, \"require_seen\": $SEEN}}") ;;
+            \"preload\": true, \"require_seen\": $SEEN, \"profile\": ${PROFILE:-false}}}") ;;
 esac
 
 nvidia-smi --query-gpu=name,memory.total --format=csv
