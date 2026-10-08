@@ -32,6 +32,16 @@ H100 80GB, 20 LoCoMo prompts, fp32): worst max-abs logit error 4.6e-5 vs HF, 7.3
 recompute, 4.2e-5 for the identity case (gate 1e-3). bf16 noise floor: mean first-token KL
 6.4e-4, max 4.0e-3, top-1 agreement 1.000. vLLM work (C3) is now unblocked.
 
+**E1 done (Oct 8, 2026; jobs 6092366 + 6092367, H100, bf16, top-10, all 1,986 questions).**
+F1 cat 1-4: full 0.319, full_context 0.326, re-position only 0.152. Best at each charged budget:
+AgentKVShift 0.210 @ 0.12, 0.225 @ 0.18, 0.240 @ 0.23, 0.272 @ 0.40, 0.302 @ 0.70; CacheBlend
+and EPIC are at or below it everywhere (EPIC tops out at 0.236 @ 0.28). **The 0.02-F1 @ 10-15%
+target is not met**; AgentKVShift gets within 0.02 only at ~70%. The failure is mostly the
+model answering "not mentioned" (43% of re-position answers vs 13% for full), which also
+inflates category-5 accuracy (0.46 vs 0.29). E5 confirms the served path matches Transformers
+(0.120 vs 0.119 on n=100). Table and plot are in `results/e1/` (`scripts/analyze.py`,
+`scripts/plot_e1.py`). Nominal ratio != charged budget: layers 0-1 are charged in full.
+
 **Timing finding (Oct 7, profile jobs 6092365, 6092397, 6092445, H100).** PyTorch picked cuDNN's
 SDPA kernel, which rebuilds its plan for every new sequence length; every LoCoMo prompt has a
 new length, so each call paid ~40-45 ms. Median prefill over 12 distinct prompt lengths (~2.3K

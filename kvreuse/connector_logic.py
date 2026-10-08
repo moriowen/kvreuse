@@ -76,6 +76,17 @@ class StoreIndex:
             p += n
 
 
+def seen_only(segs: list[Segment], seen: set[str]) -> list[Segment]:
+    """The leading run of ``segs`` whose KV an earlier request already produced (E4). vLLM
+    takes a contiguous prefix, so the first unseen segment ends the hit."""
+    out = []
+    for s in segs:
+        if s.key not in seen:
+            break
+        out.append(s)
+    return out
+
+
 def matched_tokens(segs: list[Segment], n_prompt: int, n_computed: int, block_size: int) -> int:
     """Tokens the connector can supply beyond ``n_computed``: the covered prefix rounded down
     to whole blocks, and never the last prompt token (vLLM must compute at least one)."""

@@ -49,6 +49,14 @@ def test_alignment_and_slots():
     assert slot_mapping([5, 2], 14, 4, 16).tolist() == [94, 95, 32, 33]
 
 
+def test_seen_only_stops_at_first_unseen():
+    from kvreuse.connector_logic import Segment, seen_only
+    segs = [Segment("p", 0, 7, 0), Segment("a", 7, 30, 2), Segment("b", 37, 30, 2), Segment("c", 67, 30, 2)]
+    assert [s.key for s in seen_only(segs, {"p", "a", "c"})] == ["p", "a"]
+    assert seen_only(segs, {"a", "b"}) == []  # unseen prefix: no hit at all
+    assert seen_only(segs, {"p", "a", "b", "c"}) == segs
+
+
 def test_packed_kv_matches_transformers_assembly(view, ids):
     index, tensors, store, prefix, chunks = _store(view, ids)
     order = [3, 0, 4]

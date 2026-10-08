@@ -1,0 +1,1 @@
+python scripts/export_store.py --model "$MODEL" --out "$HOME/scratch/kvreuse-store-all"

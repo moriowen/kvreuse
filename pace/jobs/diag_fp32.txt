@@ -1,0 +1,3 @@
+python scripts/run_eval.py --model "$MODEL" --method full --dtype fp32 --limit 300
+python scripts/run_eval.py --model "$MODEL" --method reposition --dtype fp32 --limit 300 --kl
+python scripts/run_eval.py --model "$MODEL" --method agentkvshift --budget 0.1 --dtype fp32 --limit 300 --kl

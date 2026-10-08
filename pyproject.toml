@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "matplotlib"]  # matplotlib only for scripts/plot_e1.py
 embed = ["sentence-transformers"]  # only for prepare_data.py --retriever embed
 
 [tool.setuptools]

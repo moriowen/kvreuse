@@ -12,6 +12,15 @@ Register with:
 Run with prefix caching off (``--no-enable-prefix-caching``): otherwise vLLM registers the
 loaded (approximate) KV in its own prefix cache under exact token hashes.
 
+Optional ``kv_connector_extra_config`` keys:
+    kv_device     "cuda" (default): loaded entries stay GPU-resident. "cpu": they stay in host
+                  memory and are copied to the GPU on every load, so the copy is in the
+                  measured cost (E3/E4; the full ten-conversation store is ~33 GB).
+    preload       load every entry at start-up (worker side), so no disk reads during a run.
+    require_seen  E4: a segment is served only after an earlier *finished* request contained
+                  it, as if each chunk's KV were saved the first time it was prefilled. The
+                  store itself is still built offline; saving is not timed.
+
 The scheduler-side and worker-side instances live in different processes and share only
 the metadata built here, so each loads what it needs from ``store_dir`` itself. Loads are
 synchronous (written in ``start_load_kv``), so the default CUDA-graph mode is unaffected.
@@ -33,7 +42,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
 )
 from vllm.logger import init_logger
 
-from .connector_logic import Segment, StoreIndex, assemble_packed, matched_tokens, slot_mapping
+from .connector_logic import Segment, StoreIndex, assemble_packed, matched_tokens, seen_only, slot_mapping
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -79,15 +88,24 @@ class ChunkReuseConnector(KVConnectorBase_V1):
         self._head_dim = self._index.meta["head_dim"]
         self._dump_dir = self._kv_transfer_config.get_from_extra_config("dump_dir", None)
         self._dumped = 0
+        self._kv_device = self._kv_transfer_config.get_from_extra_config("kv_device", "cuda")
+        self._require_seen = bool(self._kv_transfer_config.get_from_extra_config("require_seen", False))
+        self._seen: set[str] = set()
         self.stats = {"requests": 0, "hit_tokens": 0, "prompt_tokens": 0}
-        logger.info("ChunkReuseConnector role=%s store=%s entries=%d", role, store, len(self._index.entries))
+        logger.info("ChunkReuseConnector role=%s store=%s entries=%d kv_device=%s require_seen=%s",
+                    role, store, len(self._index.entries), self._kv_device, self._require_seen)
+        if role == KVConnectorRole.WORKER and self._kv_transfer_config.get_from_extra_config("preload", False):
+            for key in self._index.entries:
+                self._load(key)
+            logger.info("ChunkReuseConnector preloaded %d entries to %s", len(self._kv), self._kv_device)
 
     # ---------------- scheduler side ----------------
 
     def get_num_new_matched_tokens(self, request: "Request", num_computed_tokens: int) -> tuple[int | None, bool]:
         prompt = list(request.prompt_token_ids or [])
         segs = self._index.match(prompt)  # deterministic, so repeated calls are side-effect free
-        n = matched_tokens(segs, len(prompt), num_computed_tokens, self._block_size)
+        served = seen_only(segs, self._seen) if self._require_seen else segs
+        n = matched_tokens(served, len(prompt), num_computed_tokens, self._block_size)
         self._plans[request.request_id] = (segs, num_computed_tokens, n)
         return n, False
 
@@ -108,22 +126,29 @@ class ChunkReuseConnector(KVConnectorBase_V1):
             self.stats["requests"] += 1
             self.stats["hit_tokens"] += n
             self.stats["prompt_tokens"] += len(req.prompt_token_ids or [])
+            if self.stats["requests"] % 100 == 0:
+                logger.info("ChunkReuseConnector stats %s", self.stats)
         # Preempted-and-resumed requests recompute from scratch (no reload): simple and correct.
         self._need_load.clear()
         return meta
 
     def request_finished(self, request: "Request", block_ids: list[int]) -> tuple[bool, dict[str, Any] | None]:
-        self._plans.pop(request.request_id, None)
+        plan = self._plans.pop(request.request_id, None)
+        if plan is not None and self._require_seen:
+            self._seen.update(s.key for s in plan[0])  # its KV now "exists" for later requests
         return False, None
 
     # ---------------- worker side ----------------
 
-    def _get_kv(self, key: str) -> torch.Tensor:
+    def _load(self, key: str) -> torch.Tensor:
         kv = self._kv.get(key)
         if kv is None:
-            kv = load_file(str(self._store / self._index.entries[key]["file"]), device="cuda")["kv"]
-            self._kv[key] = kv  # GPU-resident after first use
+            kv = load_file(str(self._store / self._index.entries[key]["file"]), device=self._kv_device)["kv"]
+            self._kv[key] = kv  # resident on kv_device after first use
         return kv
+
+    def _get_kv(self, key: str) -> torch.Tensor:
+        return self._load(key).to("cuda")  # no copy when kv_device is cuda
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs: Any) -> None:
         meta = self._get_connector_metadata()
