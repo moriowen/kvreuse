@@ -6,3 +6,15 @@ results/
 .pytest_cache/
 .DS_Store
 logs/
+
+# Kept locally, not part of the published repo
+walkthrough/
+reports/
+research_notes/
+learn/
+concept-guide.md
+proposal-nonprefix-kv-reuse-agent-memory.md
+proposal-nonprefix-kv-reuse-agent-memory.tex
+presenter-notes.md
+AGENTS.md
+CLAUDE.md

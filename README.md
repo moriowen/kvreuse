@@ -1,16 +1,13 @@
 # Prefill once, reuse anywhere
 
-![Prefill once, reuse anywhere: non-prefix KV reuse for agent memory in vLLM](walkthrough/img/cover.png)
+![Prefill once, reuse anywhere: non-prefix KV reuse for agent memory in vLLM](docs/img/cover.png)
 
 Non-prefix KV cache reuse for memory-augmented LLM agents, built on Hugging Face Transformers
 and served through an unmodified vLLM. This is the semester project for CS 6220 Big Data Systems
 at Georgia Tech (Fall 2026, Group 7): Atharva Mohite, Teppei Kawashima, Prakhar Langer and
 Vishal Puneyani.
 
-**[Slides](https://moriowen.github.io/kvreuse/walkthrough/slides.html)** ·
-[Walkthrough](https://moriowen.github.io/kvreuse/walkthrough/) ·
-[Proposal (PDF)](Group7-proposal-nonprefix-kv-reuse-agent-memory.pdf) ·
-[Concept guide](concept-guide.md)
+[Proposal (PDF)](Group7-proposal-nonprefix-kv-reuse-agent-memory.pdf)
 
 ## The problem
 
@@ -28,7 +25,7 @@ Serving engines already avoid some of that work. vLLM's prefix caching and SGLan
 RadixAttention reuse KV blocks between requests, but only when the requests **start with
 identical tokens**. Memory retrieval breaks that condition all the time:
 
-![Two questions retrieve overlapping memories in a different order, so the prefix cache only hits on the system prompt](walkthrough/img/problem.png)
+![Two questions retrieve overlapping memories in a different order, so the prefix cache only hits on the system prompt](docs/img/problem.png)
 
 Question 2 needs memories C and A, which were computed seconds earlier for question 1. They
 moved, so the prefix cache misses them and they get prefilled again. Over a long conversation
@@ -36,7 +33,7 @@ the same memories are prefilled many times.
 
 ## The approach
 
-![Chunk, prefill alone, load, re-rotate, correct](walkthrough/img/idea.png)
+![Chunk, prefill alone, load, re-rotate, correct](docs/img/idea.png)
 
 We treat each memory entry as a chunk: whole dialogue turns from one session, packed to about
 256 tokens and never split mid-turn. The first time a chunk is retrieved we prefill it on its
@@ -45,7 +42,7 @@ KV, wherever the chunk lands. The question at the end is always computed fresh.
 
 Reused KV is wrong in two ways, though:
 
-![Error 1 is position and has an exact fix; error 2 is missing context and needs recompute](walkthrough/img/catch.png)
+![Error 1 is position and has an exact fix; error 2 is missing context and needs recompute](docs/img/catch.png)
 
 1. **Position.** Mistral uses rotary position embeddings (RoPE), so a cached key encodes where
    its token sat. Rotations compose, so one extra rotation by the position difference moves a
@@ -57,7 +54,7 @@ Reused KV is wrong in two ways, though:
 Which tokens to recompute is what the project studies. We compare four published answers, all
 plugged into the same per-layer recompute loop and charged by the same budget formula:
 
-![Four correction methods: re-positioning only, boundary (EPIC), dynamic selection (CacheBlend), offset correction (AgentKVShift)](walkthrough/img/methods.png)
+![Four correction methods: re-positioning only, boundary (EPIC), dynamic selection (CacheBlend), offset correction (AgentKVShift)](docs/img/methods.png)
 
 | # | Method | Recomputes | Bets that the error... |
 |---|---|---|---|
@@ -140,8 +137,7 @@ kvreuse/          the package
 scripts/          prepare_data, e0_real, run_eval, analyze, export_store, vllm_e5, profile_prefill
 tests/            E0 and connector logic on a tiny random Mistral (CPU, under a second)
 pace/             Slurm job scripts for PACE ICE
-walkthrough/      slides and walkthrough pages (HTML)
-reports/          research review of prior art and vLLM connector internals
+docs/img/         figures used in this README
 ```
 
 ## Running it
@@ -156,22 +152,8 @@ python scripts/run_eval.py --method full          # also: reposition, epic, cach
 python scripts/analyze.py results/*.jsonl --out results/table.md
 ```
 
-The real model only runs on a GPU node. [AGENTS.md](AGENTS.md) covers the PACE workflow, the
-fixed design decisions and the experiment rules.
-
-## Walkthrough
-
-The [`walkthrough/`](walkthrough/) folder is a small static site. GitHub shows HTML files as
-source, so open it through the Pages links above or locally in a browser.
-
-| Page | What it covers |
-|---|---|
-| [slides.html](walkthrough/slides.html) | The 21-slide project check-in deck, with speaker notes |
-| [index.html](walkthrough/index.html) | Overview and current status |
-| [pipeline.html](walkthrough/pipeline.html) | One LoCoMo question followed from raw conversation to F1 |
-| [methods.html](walkthrough/methods.html) | The four methods on an interactive token-by-layer grid |
-| [experiments.html](walkthrough/experiments.html) | E0 to E5 and the numbers so far |
-| [codebase.html](walkthrough/codebase.html) | Every file, its dependencies, and the PACE job flow |
+The real model only runs on a GPU node. The Slurm scripts for Georgia Tech's PACE ICE cluster are
+in `pace/`.
 
 ## References
 
@@ -179,4 +161,4 @@ CacheBlend ([2405.16444](https://arxiv.org/abs/2405.16444)), EPIC
 ([2410.15332](https://arxiv.org/abs/2410.15332)), AgentKVShift
 ([2607.21604](https://arxiv.org/abs/2607.21604)), KVCOMM
 ([2510.12872](https://arxiv.org/abs/2510.12872)), LMCache, LoCoMo. The full list is in the
-[proposal](proposal-nonprefix-kv-reuse-agent-memory.md).
+[proposal](Group7-proposal-nonprefix-kv-reuse-agent-memory.pdf).
