@@ -3,11 +3,7 @@
 ![Prefill once, reuse anywhere: non-prefix KV reuse for agent memory in vLLM](docs/img/cover.png)
 
 Non-prefix KV cache reuse for memory-augmented LLM agents, built on Hugging Face Transformers
-and served through an unmodified vLLM. This is the semester project for CS 6220 Big Data Systems
-at Georgia Tech (Fall 2026, Group 7): Atharva Mohite, Teppei Kawashima, Prakhar Langer and
-Vishal Puneyani.
-
-[Proposal (PDF)](Group7-proposal-nonprefix-kv-reuse-agent-memory.pdf)
+and served through an unmodified vLLM.
 
 ## The problem
 
@@ -160,5 +156,4 @@ in `pace/`.
 CacheBlend ([2405.16444](https://arxiv.org/abs/2405.16444)), EPIC
 ([2410.15332](https://arxiv.org/abs/2410.15332)), AgentKVShift
 ([2607.21604](https://arxiv.org/abs/2607.21604)), KVCOMM
-([2510.12872](https://arxiv.org/abs/2510.12872)), LMCache, LoCoMo. The full list is in the
-[proposal](Group7-proposal-nonprefix-kv-reuse-agent-memory.pdf).
+([2510.12872](https://arxiv.org/abs/2510.12872)), LMCache, LoCoMo.

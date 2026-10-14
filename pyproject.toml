@@ -1,7 +1,7 @@
 [project]
 name = "kvreuse"
 version = "0.1.0"
-description = "Non-prefix KV reuse for agent memory (CS 6220 Group 7)"
+description = "Non-prefix KV reuse for agent memory"
 requires-python = ">=3.10"
 dependencies = [
     "torch>=2.5",
