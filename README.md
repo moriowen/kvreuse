@@ -1,6 +1,6 @@
 # Prefill once, reuse anywhere
 
-![Prefill once, reuse anywhere: non-prefix KV reuse for agent memory in vLLM](docs/img/cover.png)
+![Prefill once, reuse anywhere: non-prefix KV reuse for agent memory in vLLM](docs/img/kvreuse-cover.png)
 
 Non-prefix KV cache reuse for memory-augmented LLM agents, built on Hugging Face Transformers
 and served through an unmodified vLLM.
